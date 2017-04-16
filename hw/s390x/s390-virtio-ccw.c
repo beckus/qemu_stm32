@@ -9,52 +9,43 @@
  * directory.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/boards.h"
 #include "exec/address-spaces.h"
 #include "s390-virtio.h"
 #include "hw/s390x/sclp.h"
 #include "hw/s390x/s390_flic.h"
-#include "ioinst.h"
-#include "css.h"
+#include "hw/s390x/ioinst.h"
+#include "hw/s390x/css.h"
 #include "virtio-ccw.h"
 #include "qemu/config-file.h"
 #include "s390-pci-bus.h"
 #include "hw/s390x/storage-keys.h"
+#include "hw/compat.h"
+#include "ipl.h"
+#include "hw/s390x/s390-virtio-ccw.h"
+#include "hw/s390x/css-bridge.h"
 
-#define TYPE_S390_CCW_MACHINE               "s390-ccw-machine"
-
-#define S390_CCW_MACHINE(obj) \
-    OBJECT_CHECK(S390CcwMachineState, (obj), TYPE_S390_CCW_MACHINE)
-
-typedef struct S390CcwMachineState {
-    /*< private >*/
-    MachineState parent_obj;
-
-    /*< public >*/
-    bool aes_key_wrap;
-    bool dea_key_wrap;
-} S390CcwMachineState;
+static const char *const reset_dev_types[] = {
+    TYPE_VIRTUAL_CSS_BRIDGE,
+    "s390-sclp-event-facility",
+    "s390-flic",
+    "diag288",
+};
 
 void subsystem_reset(void)
 {
-    DeviceState *css, *sclp, *flic, *diag288;
+    DeviceState *dev;
+    int i;
 
-    css = DEVICE(object_resolve_path_type("", "virtual-css-bridge", NULL));
-    if (css) {
-        qdev_reset_all(css);
-    }
-    sclp = DEVICE(object_resolve_path_type("",
-                  "s390-sclp-event-facility", NULL));
-    if (sclp) {
-        qdev_reset_all(sclp);
-    }
-    flic = DEVICE(object_resolve_path_type("", "s390-flic", NULL));
-    if (flic) {
-        qdev_reset_all(flic);
-    }
-    diag288 = DEVICE(object_resolve_path_type("", "diag288", NULL));
-    if (diag288) {
-        qdev_reset_all(diag288);
+    for (i = 0; i < ARRAY_SIZE(reset_dev_types); i++) {
+        dev = DEVICE(object_resolve_path_type("", reset_dev_types[i], NULL));
+        if (dev) {
+            qdev_reset_all(dev);
+        }
     }
 }
 
@@ -106,8 +97,7 @@ void s390_memory_init(ram_addr_t mem_size)
     MemoryRegion *ram = g_new(MemoryRegion, 1);
 
     /* allocate RAM for core */
-    memory_region_init_ram(ram, NULL, "s390.ram", mem_size, &error_fatal);
-    vmstate_register_ram_global(ram);
+    memory_region_allocate_system_memory(ram, NULL, "s390.ram", mem_size);
     memory_region_add_subregion(sysmem, 0, ram);
 
     /* Initialize storage key device */
@@ -138,7 +128,7 @@ static void ccw_init(MachineState *machine)
     virtio_ccw_register_hcalls();
 
     /* init CPUs */
-    s390_init_cpus(machine->cpu_model);
+    s390_init_cpus(machine);
 
     if (kvm_enabled()) {
         kvm_s390_enable_css_support(s390_cpu_addr2state(0));
@@ -158,12 +148,54 @@ static void ccw_init(MachineState *machine)
                     gtod_save, gtod_load, kvm_state);
 }
 
+static void s390_cpu_plug(HotplugHandler *hotplug_dev,
+                        DeviceState *dev, Error **errp)
+{
+    gchar *name;
+    S390CPU *cpu = S390_CPU(dev);
+    CPUState *cs = CPU(dev);
+
+    name = g_strdup_printf("cpu[%i]", cpu->env.cpu_num);
+    object_property_set_link(OBJECT(hotplug_dev), OBJECT(cs), name,
+                             errp);
+    g_free(name);
+}
+
+static void s390_machine_device_plug(HotplugHandler *hotplug_dev,
+                                     DeviceState *dev, Error **errp)
+{
+    if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
+        s390_cpu_plug(hotplug_dev, dev, errp);
+    }
+}
+
+static HotplugHandler *s390_get_hotplug_handler(MachineState *machine,
+                                                DeviceState *dev)
+{
+    if (object_dynamic_cast(OBJECT(dev), TYPE_CPU)) {
+        return HOTPLUG_HANDLER(machine);
+    }
+    return NULL;
+}
+
+static void s390_hot_add_cpu(const int64_t id, Error **errp)
+{
+    MachineState *machine = MACHINE(qdev_get_machine());
+
+    s390x_new_cpu(machine->cpu_model, id, errp);
+}
+
 static void ccw_machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     NMIClass *nc = NMI_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
+    S390CcwMachineClass *s390mc = S390_MACHINE_CLASS(mc);
 
+    s390mc->ri_allowed = true;
     mc->init = ccw_init;
+    mc->reset = s390_machine_reset;
+    mc->hot_add_cpu = s390_hot_add_cpu;
     mc->block_default_type = IF_VIRTIO;
     mc->no_cdrom = 1;
     mc->no_floppy = 1;
@@ -171,7 +203,9 @@ static void ccw_machine_class_init(ObjectClass *oc, void *data)
     mc->no_parallel = 1;
     mc->no_sdcard = 1;
     mc->use_sclp = 1;
-    mc->max_cpus = 255;
+    mc->max_cpus = 248;
+    mc->get_hotplug_handler = s390_get_hotplug_handler;
+    hc->plug = s390_machine_device_plug;
     nc->nmi_monitor_handler = s390_nmi;
 }
 
@@ -205,6 +239,20 @@ static inline void machine_set_dea_key_wrap(Object *obj, bool value,
     ms->dea_key_wrap = value;
 }
 
+bool ri_allowed(void)
+{
+    if (kvm_enabled()) {
+        MachineClass *mc = MACHINE_GET_CLASS(qdev_get_machine());
+        if (object_class_dynamic_cast(OBJECT_CLASS(mc),
+                                      TYPE_S390_CCW_MACHINE)) {
+            S390CcwMachineClass *s390mc = S390_MACHINE_CLASS(mc);
+
+            return s390mc->ri_allowed;
+        }
+    }
+    return 0;
+}
+
 static inline void s390_machine_initfn(Object *obj)
 {
     object_property_add_bool(obj, "aes-key-wrap",
@@ -230,14 +278,62 @@ static const TypeInfo ccw_machine_info = {
     .abstract      = true,
     .instance_size = sizeof(S390CcwMachineState),
     .instance_init = s390_machine_initfn,
+    .class_size = sizeof(S390CcwMachineClass),
     .class_init    = ccw_machine_class_init,
     .interfaces = (InterfaceInfo[]) {
         { TYPE_NMI },
+        { TYPE_HOTPLUG_HANDLER},
         { }
     },
 };
 
+#define DEFINE_CCW_MACHINE(suffix, verstr, latest)                            \
+    static void ccw_machine_##suffix##_class_init(ObjectClass *oc,            \
+                                                  void *data)                 \
+    {                                                                         \
+        MachineClass *mc = MACHINE_CLASS(oc);                                 \
+        ccw_machine_##suffix##_class_options(mc);                             \
+        mc->desc = "VirtIO-ccw based S390 machine v" verstr;                  \
+        if (latest) {                                                         \
+            mc->alias = "s390-ccw-virtio";                                    \
+            mc->is_default = 1;                                               \
+        }                                                                     \
+    }                                                                         \
+    static void ccw_machine_##suffix##_instance_init(Object *obj)             \
+    {                                                                         \
+        MachineState *machine = MACHINE(obj);                                 \
+        ccw_machine_##suffix##_instance_options(machine);                     \
+    }                                                                         \
+    static const TypeInfo ccw_machine_##suffix##_info = {                     \
+        .name = MACHINE_TYPE_NAME("s390-ccw-virtio-" verstr),                 \
+        .parent = TYPE_S390_CCW_MACHINE,                                      \
+        .class_init = ccw_machine_##suffix##_class_init,                      \
+        .instance_init = ccw_machine_##suffix##_instance_init,                \
+    };                                                                        \
+    static void ccw_machine_register_##suffix(void)                           \
+    {                                                                         \
+        type_register_static(&ccw_machine_##suffix##_info);                   \
+    }                                                                         \
+    type_init(ccw_machine_register_##suffix)
+
+#define CCW_COMPAT_2_6 \
+        HW_COMPAT_2_6 \
+        {\
+            .driver   = TYPE_S390_IPL,\
+            .property = "iplbext_migration",\
+            .value    = "off",\
+        }, {\
+            .driver   = TYPE_VIRTUAL_CSS_BRIDGE,\
+            .property = "css_dev_path",\
+            .value    = "off",\
+        },
+
+#define CCW_COMPAT_2_5 \
+        CCW_COMPAT_2_6 \
+        HW_COMPAT_2_5
+
 #define CCW_COMPAT_2_4 \
+        HW_COMPAT_2_4 \
         {\
             .driver   = TYPE_S390_SKEYS,\
             .property = "migration-enabled",\
@@ -262,46 +358,71 @@ static const TypeInfo ccw_machine_info = {
             .driver   = "virtio-rng-ccw",\
             .property = "max_revision",\
             .value    = "0",\
+        },{\
+            .driver   = "virtio-net-ccw",\
+            .property = "max_revision",\
+            .value    = "0",\
+        },{\
+            .driver   = "virtio-scsi-ccw",\
+            .property = "max_revision",\
+            .value    = "0",\
+        },{\
+            .driver   = "vhost-scsi-ccw",\
+            .property = "max_revision",\
+            .value    = "0",\
         },
 
-static void ccw_machine_2_4_class_init(ObjectClass *oc, void *data)
+static void ccw_machine_2_7_instance_options(MachineState *machine)
 {
-    MachineClass *mc = MACHINE_CLASS(oc);
-    static GlobalProperty compat_props[] = {
-        CCW_COMPAT_2_4
-        { /* end of list */ }
-    };
-
-    mc->desc = "VirtIO-ccw based S390 machine v2.4";
-    mc->compat_props = compat_props;
 }
 
-static const TypeInfo ccw_machine_2_4_info = {
-    .name          = MACHINE_TYPE_NAME("s390-ccw-virtio-2.4"),
-    .parent        = TYPE_S390_CCW_MACHINE,
-    .class_init    = ccw_machine_2_4_class_init,
-};
-
-static void ccw_machine_2_5_class_init(ObjectClass *oc, void *data)
+static void ccw_machine_2_7_class_options(MachineClass *mc)
 {
-    MachineClass *mc = MACHINE_CLASS(oc);
+}
+DEFINE_CCW_MACHINE(2_7, "2.7", true);
 
-    mc->alias = "s390-ccw-virtio";
-    mc->desc = "VirtIO-ccw based S390 machine v2.5";
-    mc->is_default = 1;
+static void ccw_machine_2_6_instance_options(MachineState *machine)
+{
+    ccw_machine_2_7_instance_options(machine);
 }
 
-static const TypeInfo ccw_machine_2_5_info = {
-    .name          = MACHINE_TYPE_NAME("s390-ccw-virtio-2.5"),
-    .parent        = TYPE_S390_CCW_MACHINE,
-    .class_init    = ccw_machine_2_5_class_init,
-};
+static void ccw_machine_2_6_class_options(MachineClass *mc)
+{
+    S390CcwMachineClass *s390mc = S390_MACHINE_CLASS(mc);
+
+    s390mc->ri_allowed = false;
+    ccw_machine_2_7_class_options(mc);
+    SET_MACHINE_COMPAT(mc, CCW_COMPAT_2_6);
+}
+DEFINE_CCW_MACHINE(2_6, "2.6", false);
+
+static void ccw_machine_2_5_instance_options(MachineState *machine)
+{
+    ccw_machine_2_6_instance_options(machine);
+}
+
+static void ccw_machine_2_5_class_options(MachineClass *mc)
+{
+    ccw_machine_2_6_class_options(mc);
+    SET_MACHINE_COMPAT(mc, CCW_COMPAT_2_5);
+}
+DEFINE_CCW_MACHINE(2_5, "2.5", false);
+
+static void ccw_machine_2_4_instance_options(MachineState *machine)
+{
+    ccw_machine_2_5_instance_options(machine);
+}
+
+static void ccw_machine_2_4_class_options(MachineClass *mc)
+{
+    ccw_machine_2_5_class_options(mc);
+    SET_MACHINE_COMPAT(mc, CCW_COMPAT_2_4);
+}
+DEFINE_CCW_MACHINE(2_4, "2.4", false);
 
 static void ccw_machine_register_types(void)
 {
     type_register_static(&ccw_machine_info);
-    type_register_static(&ccw_machine_2_4_info);
-    type_register_static(&ccw_machine_2_5_info);
 }
 
 type_init(ccw_machine_register_types)

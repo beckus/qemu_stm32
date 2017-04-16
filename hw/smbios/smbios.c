@@ -15,6 +15,8 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu/config-file.h"
 #include "qemu/error-report.h"
 #include "sysemu/sysemu.h"
@@ -22,6 +24,8 @@
 #include "hw/smbios/smbios.h"
 #include "hw/loader.h"
 #include "exec/cpu-common.h"
+#include "smbios_build.h"
+#include "hw/smbios/ipmi.h"
 
 /* legacy structures and constants for <= 2.0 machines */
 struct smbios_header {
@@ -51,10 +55,10 @@ static bool smbios_uuid_encoded = true;
 /* end: legacy structures & constants for <= 2.0 machines */
 
 
-static uint8_t *smbios_tables;
-static size_t smbios_tables_len;
-static unsigned smbios_table_max;
-static unsigned smbios_table_cnt;
+uint8_t *smbios_tables;
+size_t smbios_tables_len;
+unsigned smbios_table_max;
+unsigned smbios_table_cnt;
 static SmbiosEntryPointType smbios_ep_type = SMBIOS_ENTRY_POINT_21;
 
 static SmbiosEntryPoint ep;
@@ -319,7 +323,7 @@ static void smbios_register_config(void)
     qemu_add_opts(&qemu_smbios_opts);
 }
 
-machine_init(smbios_register_config);
+opts_init(smbios_register_config);
 
 static void smbios_validate_table(void)
 {
@@ -427,7 +431,7 @@ uint8_t *smbios_get_table_legacy(size_t *length)
 /* end: legacy setup functions for <= 2.0 machines */
 
 
-static bool smbios_skip_table(uint8_t type, bool required_table)
+bool smbios_skip_table(uint8_t type, bool required_table)
 {
     if (test_bit(type, have_binfile_bitmap)) {
         return true; /* user provided their own binary blob(s) */
@@ -440,65 +444,6 @@ static bool smbios_skip_table(uint8_t type, bool required_table)
     }
     return true;
 }
-
-#define SMBIOS_BUILD_TABLE_PRE(tbl_type, tbl_handle, tbl_required)        \
-    struct smbios_type_##tbl_type *t;                                     \
-    size_t t_off; /* table offset into smbios_tables */                   \
-    int str_index = 0;                                                    \
-    do {                                                                  \
-        /* should we skip building this table ? */                        \
-        if (smbios_skip_table(tbl_type, tbl_required)) {                  \
-            return;                                                       \
-        }                                                                 \
-                                                                          \
-        /* use offset of table t within smbios_tables */                  \
-        /* (pointer must be updated after each realloc) */                \
-        t_off = smbios_tables_len;                                        \
-        smbios_tables_len += sizeof(*t);                                  \
-        smbios_tables = g_realloc(smbios_tables, smbios_tables_len);      \
-        t = (struct smbios_type_##tbl_type *)(smbios_tables + t_off);     \
-                                                                          \
-        t->header.type = tbl_type;                                        \
-        t->header.length = sizeof(*t);                                    \
-        t->header.handle = cpu_to_le16(tbl_handle);                       \
-    } while (0)
-
-#define SMBIOS_TABLE_SET_STR(tbl_type, field, value)                      \
-    do {                                                                  \
-        int len = (value != NULL) ? strlen(value) + 1 : 0;                \
-        if (len > 1) {                                                    \
-            smbios_tables = g_realloc(smbios_tables,                      \
-                                      smbios_tables_len + len);           \
-            memcpy(smbios_tables + smbios_tables_len, value, len);        \
-            smbios_tables_len += len;                                     \
-            /* update pointer post-realloc */                             \
-            t = (struct smbios_type_##tbl_type *)(smbios_tables + t_off); \
-            t->field = ++str_index;                                       \
-        } else {                                                          \
-            t->field = 0;                                                 \
-        }                                                                 \
-    } while (0)
-
-#define SMBIOS_BUILD_TABLE_POST                                           \
-    do {                                                                  \
-        size_t term_cnt, t_size;                                          \
-                                                                          \
-        /* add '\0' terminator (add two if no strings defined) */         \
-        term_cnt = (str_index == 0) ? 2 : 1;                              \
-        smbios_tables = g_realloc(smbios_tables,                          \
-                                  smbios_tables_len + term_cnt);          \
-        memset(smbios_tables + smbios_tables_len, 0, term_cnt);           \
-        smbios_tables_len += term_cnt;                                    \
-                                                                          \
-        /* update smbios max. element size */                             \
-        t_size = smbios_tables_len - t_off;                               \
-        if (t_size > smbios_table_max) {                                  \
-            smbios_table_max = t_size;                                    \
-        }                                                                 \
-                                                                          \
-        /* update smbios element count */                                 \
-        smbios_table_cnt++;                                               \
-    } while (0)
 
 static void smbios_build_type_0_table(void)
 {
@@ -904,6 +849,7 @@ void smbios_get_tables(const struct smbios_phys_mem_area *mem_array,
         }
 
         smbios_build_type_32_table();
+        smbios_build_type_38_table();
         smbios_build_type_127_table();
 
         smbios_validate_table();
@@ -937,7 +883,6 @@ static void save_opt(const char **dest, QemuOpts *opts, const char *name)
 
 void smbios_entry_add(QemuOpts *opts)
 {
-    Error *local_err = NULL;
     const char *val;
 
     assert(!smbios_immutable);
@@ -948,11 +893,7 @@ void smbios_entry_add(QemuOpts *opts)
         int size;
         struct smbios_table *table; /* legacy mode only */
 
-        qemu_opts_validate(opts, qemu_smbios_file_opts, &local_err);
-        if (local_err) {
-            error_report_err(local_err);
-            exit(1);
-        }
+        qemu_opts_validate(opts, qemu_smbios_file_opts, &error_fatal);
 
         size = get_image_size(val);
         if (size == -1 || size < sizeof(struct smbios_structure_header)) {
@@ -1034,11 +975,7 @@ void smbios_entry_add(QemuOpts *opts)
 
         switch (type) {
         case 0:
-            qemu_opts_validate(opts, qemu_smbios_type0_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type0_opts, &error_fatal);
             save_opt(&type0.vendor, opts, "vendor");
             save_opt(&type0.version, opts, "version");
             save_opt(&type0.date, opts, "date");
@@ -1054,11 +991,7 @@ void smbios_entry_add(QemuOpts *opts)
             }
             return;
         case 1:
-            qemu_opts_validate(opts, qemu_smbios_type1_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type1_opts, &error_fatal);
             save_opt(&type1.manufacturer, opts, "manufacturer");
             save_opt(&type1.product, opts, "product");
             save_opt(&type1.version, opts, "version");
@@ -1076,11 +1009,7 @@ void smbios_entry_add(QemuOpts *opts)
             }
             return;
         case 2:
-            qemu_opts_validate(opts, qemu_smbios_type2_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type2_opts, &error_fatal);
             save_opt(&type2.manufacturer, opts, "manufacturer");
             save_opt(&type2.product, opts, "product");
             save_opt(&type2.version, opts, "version");
@@ -1089,11 +1018,7 @@ void smbios_entry_add(QemuOpts *opts)
             save_opt(&type2.location, opts, "location");
             return;
         case 3:
-            qemu_opts_validate(opts, qemu_smbios_type3_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type3_opts, &error_fatal);
             save_opt(&type3.manufacturer, opts, "manufacturer");
             save_opt(&type3.version, opts, "version");
             save_opt(&type3.serial, opts, "serial");
@@ -1101,11 +1026,7 @@ void smbios_entry_add(QemuOpts *opts)
             save_opt(&type3.sku, opts, "sku");
             return;
         case 4:
-            qemu_opts_validate(opts, qemu_smbios_type4_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type4_opts, &error_fatal);
             save_opt(&type4.sock_pfx, opts, "sock_pfx");
             save_opt(&type4.manufacturer, opts, "manufacturer");
             save_opt(&type4.version, opts, "version");
@@ -1114,11 +1035,7 @@ void smbios_entry_add(QemuOpts *opts)
             save_opt(&type4.part, opts, "part");
             return;
         case 17:
-            qemu_opts_validate(opts, qemu_smbios_type17_opts, &local_err);
-            if (local_err) {
-                error_report_err(local_err);
-                exit(1);
-            }
+            qemu_opts_validate(opts, qemu_smbios_type17_opts, &error_fatal);
             save_opt(&type17.loc_pfx, opts, "loc_pfx");
             save_opt(&type17.bank, opts, "bank");
             save_opt(&type17.manufacturer, opts, "manufacturer");

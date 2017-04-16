@@ -17,6 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "monitor/monitor.h"
 #include "exec/address-spaces.h"
@@ -189,9 +190,9 @@ MemoryRegion *sysbus_mmio_get_region(SysBusDevice *dev, int n)
     return dev->mmio[n].memory;
 }
 
-void sysbus_init_ioports(SysBusDevice *dev, pio_addr_t ioport, pio_addr_t size)
+void sysbus_init_ioports(SysBusDevice *dev, uint32_t ioport, uint32_t size)
 {
-    pio_addr_t i;
+    uint32_t i;
 
     for (i = 0; i < size; i++) {
         assert(dev->num_pio < QDEV_MAX_PIO);

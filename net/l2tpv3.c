@@ -23,9 +23,9 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include <linux/ip.h>
 #include <netdb.h>
-#include "config-host.h"
 #include "net/net.h"
 #include "clients.h"
 #include "qemu-common.h"
@@ -325,7 +325,7 @@ static int l2tpv3_verify_header(NetL2TPV3State *s, uint8_t *buf)
         if (s->cookie_is_64) {
             cookie = ldq_be_p(buf + s->cookie_offset);
         } else {
-            cookie = ldl_be_p(buf + s->cookie_offset);
+            cookie = ldl_be_p(buf + s->cookie_offset) & 0xffffffffULL;
         }
         if (cookie != s->rx_cookie) {
             if (!s->header_mismatch) {
@@ -516,7 +516,7 @@ static void net_l2tpv3_cleanup(NetClientState *nc)
 }
 
 static NetClientInfo net_l2tpv3_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_L2TPV3,
+    .type = NET_CLIENT_DRIVER_L2TPV3,
     .size = sizeof(NetL2TPV3State),
     .receive = net_l2tpv3_receive_dgram,
     .receive_iov = net_l2tpv3_receive_dgram_iov,
@@ -524,7 +524,7 @@ static NetClientInfo net_l2tpv3_info = {
     .cleanup = net_l2tpv3_cleanup,
 };
 
-int net_init_l2tpv3(const NetClientOptions *opts,
+int net_init_l2tpv3(const Netdev *netdev,
                     const char *name,
                     NetClientState *peer, Error **errp)
 {
@@ -545,8 +545,8 @@ int net_init_l2tpv3(const NetClientOptions *opts,
     s->queue_tail = 0;
     s->header_mismatch = false;
 
-    assert(opts->kind == NET_CLIENT_OPTIONS_KIND_L2TPV3);
-    l2tpv3 = opts->l2tpv3;
+    assert(netdev->type == NET_CLIENT_DRIVER_L2TPV3);
+    l2tpv3 = &netdev->u.l2tpv3;
 
     if (l2tpv3->has_ipv6 && l2tpv3->ipv6) {
         s->ipv6 = l2tpv3->ipv6;

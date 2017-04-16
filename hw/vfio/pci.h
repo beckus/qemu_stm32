@@ -95,6 +95,7 @@ typedef struct VFIOMSIXInfo {
     uint32_t pba_offset;
     MemoryRegion mmap_mem;
     void *mmap;
+    unsigned long *pending;
 } VFIOMSIXInfo;
 
 typedef struct VFIOPCIDevice {
@@ -113,7 +114,8 @@ typedef struct VFIOPCIDevice {
     int nr_vectors; /* Number of MSI/MSIX vectors currently in use */
     int interrupt; /* Current interrupt type */
     VFIOBAR bars[PCI_NUM_REGIONS - 1]; /* No ROM */
-    VFIOVGA vga; /* 0xa0000, 0x3b0, 0x3c0 */
+    VFIOVGA *vga; /* 0xa0000, 0x3b0, 0x3c0 */
+    void *igd_opregion;
     PCIHostDeviceAddress host;
     EventNotifier err_notifier;
     EventNotifier req_notifier;
@@ -127,9 +129,12 @@ typedef struct VFIOPCIDevice {
 #define VFIO_FEATURE_ENABLE_VGA (1 << VFIO_FEATURE_ENABLE_VGA_BIT)
 #define VFIO_FEATURE_ENABLE_REQ_BIT 1
 #define VFIO_FEATURE_ENABLE_REQ (1 << VFIO_FEATURE_ENABLE_REQ_BIT)
+#define VFIO_FEATURE_ENABLE_IGD_OPREGION_BIT 2
+#define VFIO_FEATURE_ENABLE_IGD_OPREGION \
+                                (1 << VFIO_FEATURE_ENABLE_IGD_OPREGION_BIT)
     int32_t bootindex;
+    uint32_t igd_gms;
     uint8_t pm_cap;
-    bool has_vga;
     bool pci_aer;
     bool req_enabled;
     bool has_flr;
@@ -149,11 +154,16 @@ void vfio_vga_write(void *opaque, hwaddr addr, uint64_t data, unsigned size);
 
 bool vfio_blacklist_opt_rom(VFIOPCIDevice *vdev);
 void vfio_vga_quirk_setup(VFIOPCIDevice *vdev);
-void vfio_vga_quirk_teardown(VFIOPCIDevice *vdev);
-void vfio_vga_quirk_free(VFIOPCIDevice *vdev);
+void vfio_vga_quirk_exit(VFIOPCIDevice *vdev);
+void vfio_vga_quirk_finalize(VFIOPCIDevice *vdev);
 void vfio_bar_quirk_setup(VFIOPCIDevice *vdev, int nr);
-void vfio_bar_quirk_teardown(VFIOPCIDevice *vdev, int nr);
-void vfio_bar_quirk_free(VFIOPCIDevice *vdev, int nr);
+void vfio_bar_quirk_exit(VFIOPCIDevice *vdev, int nr);
+void vfio_bar_quirk_finalize(VFIOPCIDevice *vdev, int nr);
 void vfio_setup_resetfn_quirk(VFIOPCIDevice *vdev);
+
+int vfio_populate_vga(VFIOPCIDevice *vdev);
+
+int vfio_pci_igd_opregion_init(VFIOPCIDevice *vdev,
+                               struct vfio_region_info *info);
 
 #endif /* HW_VFIO_VFIO_PCI_H */

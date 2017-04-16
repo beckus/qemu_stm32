@@ -11,23 +11,18 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <glib.h>
-#include <sys/types.h>
+#include "qemu/osdep.h"
 #include <sys/ioctl.h>
 #include <sys/wait.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <dirent.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <inttypes.h>
 #include "qga/guest-agent-core.h"
 #include "qga-qmp-commands.h"
 #include "qapi/qmp/qerror.h"
 #include "qemu/queue.h"
 #include "qemu/host-utils.h"
+#include "qemu/sockets.h"
+#include "qemu/base64.h"
+#include "qemu/cutils.h"
 
 #ifndef CONFIG_HAS_ENVIRON
 #ifdef __APPLE__
@@ -132,7 +127,6 @@ int64_t qmp_guest_get_time(Error **errp)
 {
    int ret;
    qemu_timeval tq;
-   int64_t time_ns;
 
    ret = qemu_gettimeofday(&tq);
    if (ret < 0) {
@@ -140,8 +134,7 @@ int64_t qmp_guest_get_time(Error **errp)
        return -1;
    }
 
-   time_ns = tq.tv_sec * 1000000000LL + tq.tv_usec * 1000;
-   return time_ns;
+   return tq.tv_sec * 1000000000LL + tq.tv_usec * 1000;
 }
 
 void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
@@ -215,15 +208,24 @@ void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
     }
 }
 
+typedef enum {
+    RW_STATE_NEW,
+    RW_STATE_READING,
+    RW_STATE_WRITING,
+} RwState;
+
 typedef struct GuestFileHandle {
     uint64_t id;
     FILE *fh;
+    RwState state;
     QTAILQ_ENTRY(GuestFileHandle) next;
 } GuestFileHandle;
 
 static struct {
     QTAILQ_HEAD(, GuestFileHandle) filehandles;
-} guest_file_state;
+} guest_file_state = {
+    .filehandles = QTAILQ_HEAD_INITIALIZER(guest_file_state.filehandles),
+};
 
 static int64_t guest_file_handle_add(FILE *fh, Error **errp)
 {
@@ -235,7 +237,7 @@ static int64_t guest_file_handle_add(FILE *fh, Error **errp)
         return -1;
     }
 
-    gfh = g_malloc0(sizeof(GuestFileHandle));
+    gfh = g_new0(GuestFileHandle, 1);
     gfh->id = handle;
     gfh->fh = fh;
     QTAILQ_INSERT_TAIL(&guest_file_state.filehandles, gfh, next);
@@ -383,27 +385,6 @@ safe_open_or_create(const char *path, const char *mode, Error **errp)
     return NULL;
 }
 
-static int guest_file_toggle_flags(int fd, int flags, bool set, Error **err)
-{
-    int ret, old_flags;
-
-    old_flags = fcntl(fd, F_GETFL);
-    if (old_flags == -1) {
-        error_setg_errno(err, errno, QERR_QGA_COMMAND_FAILED,
-                         "failed to fetch filehandle flags");
-        return -1;
-    }
-
-    ret = fcntl(fd, F_SETFL, set ? (old_flags | flags) : (old_flags & ~flags));
-    if (ret == -1) {
-        error_setg_errno(err, errno, QERR_QGA_COMMAND_FAILED,
-                         "failed to set filehandle flags");
-        return -1;
-    }
-
-    return ret;
-}
-
 int64_t qmp_guest_file_open(const char *path, bool has_mode, const char *mode,
                             Error **errp)
 {
@@ -424,10 +405,7 @@ int64_t qmp_guest_file_open(const char *path, bool has_mode, const char *mode,
     /* set fd non-blocking to avoid common use cases (like reading from a
      * named pipe) from hanging the agent
      */
-    if (guest_file_toggle_flags(fileno(fh), O_NONBLOCK, true, errp) < 0) {
-        fclose(fh);
-        return -1;
-    }
+    qemu_set_nonblock(fileno(fh));
 
     handle = guest_file_handle_add(fh, errp);
     if (handle < 0) {
@@ -481,6 +459,17 @@ struct GuestFileRead *qmp_guest_file_read(int64_t handle, bool has_count,
     }
 
     fh = gfh->fh;
+
+    /* explicitly flush when switching from writing to reading */
+    if (gfh->state == RW_STATE_WRITING) {
+        int ret = fflush(fh);
+        if (ret == EOF) {
+            error_setg_errno(errp, errno, "failed to flush file");
+            return NULL;
+        }
+        gfh->state = RW_STATE_NEW;
+    }
+
     buf = g_malloc0(count+1);
     read_count = fread(buf, 1, count, fh);
     if (ferror(fh)) {
@@ -488,12 +477,13 @@ struct GuestFileRead *qmp_guest_file_read(int64_t handle, bool has_count,
         slog("guest-file-read failed, handle: %" PRId64, handle);
     } else {
         buf[read_count] = 0;
-        read_data = g_malloc0(sizeof(GuestFileRead));
+        read_data = g_new0(GuestFileRead, 1);
         read_data->count = read_count;
         read_data->eof = feof(fh);
         if (read_count) {
             read_data->buf_b64 = g_base64_encode(buf, read_count);
         }
+        gfh->state = RW_STATE_READING;
     }
     g_free(buf);
     clearerr(fh);
@@ -517,7 +507,20 @@ GuestFileWrite *qmp_guest_file_write(int64_t handle, const char *buf_b64,
     }
 
     fh = gfh->fh;
-    buf = g_base64_decode(buf_b64, &buf_len);
+
+    if (gfh->state == RW_STATE_READING) {
+        int ret = fseek(fh, 0, SEEK_CUR);
+        if (ret == -1) {
+            error_setg_errno(errp, errno, "failed to seek file");
+            return NULL;
+        }
+        gfh->state = RW_STATE_NEW;
+    }
+
+    buf = qbase64_decode(buf_b64, -1, &buf_len, errp);
+    if (!buf) {
+        return NULL;
+    }
 
     if (!has_count) {
         count = buf_len;
@@ -533,9 +536,10 @@ GuestFileWrite *qmp_guest_file_write(int64_t handle, const char *buf_b64,
         error_setg_errno(errp, errno, "failed to write to file");
         slog("guest-file-write failed, handle: %" PRId64, handle);
     } else {
-        write_data = g_malloc0(sizeof(GuestFileWrite));
+        write_data = g_new0(GuestFileWrite, 1);
         write_data->count = write_count;
         write_data->eof = feof(fh);
+        gfh->state = RW_STATE_WRITING;
     }
     g_free(buf);
     clearerr(fh);
@@ -544,14 +548,24 @@ GuestFileWrite *qmp_guest_file_write(int64_t handle, const char *buf_b64,
 }
 
 struct GuestFileSeek *qmp_guest_file_seek(int64_t handle, int64_t offset,
-                                          int64_t whence, Error **errp)
+                                          GuestFileWhence *whence_code,
+                                          Error **errp)
 {
     GuestFileHandle *gfh = guest_file_handle_find(handle, errp);
     GuestFileSeek *seek_data = NULL;
     FILE *fh;
     int ret;
+    int whence;
+    Error *err = NULL;
 
     if (!gfh) {
+        return NULL;
+    }
+
+    /* We stupidly exposed 'whence':'int' in our qapi */
+    whence = ga_parse_whence(whence_code, &err);
+    if (err) {
+        error_propagate(errp, err);
         return NULL;
     }
 
@@ -559,10 +573,15 @@ struct GuestFileSeek *qmp_guest_file_seek(int64_t handle, int64_t offset,
     ret = fseek(fh, offset, whence);
     if (ret == -1) {
         error_setg_errno(errp, errno, "failed to seek file");
+        if (errno == ESPIPE) {
+            /* file is non-seekable, stdio shouldn't be buffering anyways */
+            gfh->state = RW_STATE_NEW;
+        }
     } else {
         seek_data = g_new0(GuestFileSeek, 1);
         seek_data->position = ftell(fh);
         seek_data->eof = feof(fh);
+        gfh->state = RW_STATE_NEW;
     }
     clearerr(fh);
 
@@ -583,12 +602,9 @@ void qmp_guest_file_flush(int64_t handle, Error **errp)
     ret = fflush(fh);
     if (ret == EOF) {
         error_setg_errno(errp, errno, "failed to flush file");
+    } else {
+        gfh->state = RW_STATE_NEW;
     }
-}
-
-static void guest_file_init(void)
-{
-    QTAILQ_INIT(&guest_file_state.filehandles);
 }
 
 /* linux-specific implementations. avoid this if at all possible. */
@@ -678,7 +694,7 @@ static void build_fs_mount_list_from_mtab(FsMountList *mounts, Error **errp)
             continue;
         }
 
-        mount = g_malloc0(sizeof(FsMount));
+        mount = g_new0(FsMount, 1);
         mount->dirname = g_strdup(ment->mnt_dir);
         mount->devtype = g_strdup(ment->mnt_type);
         mount->devmajor = devmajor;
@@ -757,7 +773,7 @@ static void build_fs_mount_list(FsMountList *mounts, Error **errp)
             }
         }
 
-        mount = g_malloc0(sizeof(FsMount));
+        mount = g_new0(FsMount, 1);
         mount->dirname = g_strdup(line + dir_s);
         mount->devtype = g_strdup(dash + type_s);
         mount->devmajor = devmajor;
@@ -1223,8 +1239,8 @@ int64_t qmp_guest_fsfreeze_freeze_list(bool has_mountpoints,
             goto error;
         }
 
-        /* we try to cull filesytems we know won't work in advance, but other
-         * filesytems may not implement fsfreeze for less obvious reasons.
+        /* we try to cull filesystems we know won't work in advance, but other
+         * filesystems may not implement fsfreeze for less obvious reasons.
          * these will report EOPNOTSUPP. we simply ignore these when tallying
          * the number of frozen filesystems.
          *
@@ -1373,10 +1389,10 @@ qmp_guest_fstrim(bool has_minimum, int64_t minimum, Error **errp)
             continue;
         }
 
-        /* We try to cull filesytems we know won't work in advance, but other
-         * filesytems may not implement fstrim for less obvious reasons.  These
-         * will report EOPNOTSUPP; while in some other cases ENOTTY will be
-         * reported (e.g. CD-ROMs).
+        /* We try to cull filesystems we know won't work in advance, but other
+         * filesystems may not implement fstrim for less obvious reasons.
+         * These will report EOPNOTSUPP; while in some other cases ENOTTY
+         * will be reported (e.g. CD-ROMs).
          * Any other error means an unexpected error.
          */
         r.start = 0;
@@ -1935,7 +1951,10 @@ void qmp_guest_set_user_password(const char *username,
     char *chpasswddata = NULL;
     size_t chpasswdlen;
 
-    rawpasswddata = (char *)g_base64_decode(password, &rawpasswdlen);
+    rawpasswddata = (char *)qbase64_decode(password, -1, &rawpasswdlen, errp);
+    if (!rawpasswddata) {
+        return;
+    }
     rawpasswddata = g_renew(char, rawpasswddata, rawpasswdlen + 1);
     rawpasswddata[rawpasswdlen] = '\0';
 
@@ -2213,8 +2232,14 @@ GuestMemoryBlockList *qmp_guest_get_memory_blocks(Error **errp)
 
     dp = opendir("/sys/devices/system/memory/");
     if (!dp) {
-        error_setg_errno(errp, errno, "Can't open directory"
-                         "\"/sys/devices/system/memory/\"\n");
+        /* it's ok if this happens to be a system that doesn't expose
+         * memory blocks via sysfs, but otherwise we should report
+         * an error
+         */
+        if (errno != ENOENT) {
+            error_setg_errno(errp, errno, "Can't open directory"
+                             "\"/sys/devices/system/memory/\"");
+        }
         return NULL;
     }
 
@@ -2486,5 +2511,4 @@ void ga_command_state_init(GAState *s, GACommandState *cs)
 #if defined(CONFIG_FSFREEZE)
     ga_command_state_add(cs, NULL, guest_fsfreeze_cleanup);
 #endif
-    ga_command_state_add(cs, guest_file_init, NULL);
 }

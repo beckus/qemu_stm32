@@ -23,6 +23,8 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
@@ -245,6 +247,7 @@ static void raven_pcihost_realizefn(DeviceState *d, Error **errp)
     memory_region_add_subregion(address_space_mem, 0xbffffff0, &s->pci_intack);
 
     /* TODO Remove once realize propagates to child devices. */
+    object_property_set_bool(OBJECT(&s->pci_bus), true, "realized", errp);
     object_property_set_bool(OBJECT(&s->pci_dev), true, "realized", errp);
 }
 
@@ -312,7 +315,7 @@ static void raven_realize(PCIDevice *d, Error **errp)
         if (filename) {
             if (s->elf_machine != EM_NONE) {
                 bios_size = load_elf(filename, NULL, NULL, NULL,
-                                     NULL, NULL, 1, s->elf_machine, 0);
+                                     NULL, NULL, 1, s->elf_machine, 0, 0);
             }
             if (bios_size < 0) {
                 bios_size = get_image_size(filename);
@@ -326,6 +329,7 @@ static void raven_realize(PCIDevice *d, Error **errp)
             }
         }
         if (bios_size < 0 || bios_size > BIOS_SIZE) {
+            /* FIXME should error_setg() */
             hw_error("qemu: could not load bios image '%s'\n", s->bios_name);
         }
         g_free(filename);
@@ -355,8 +359,9 @@ static void raven_class_init(ObjectClass *klass, void *data)
     dc->desc = "PReP Host Bridge - Motorola Raven";
     dc->vmsd = &vmstate_raven;
     /*
-     * PCI-facing part of the host bridge, not usable without the
-     * host-facing part, which can't be device_add'ed, yet.
+     * Reason: PCI-facing part of the host bridge, not usable without
+     * the host-facing part, which can't be device_add'ed, yet.
+     * Reason: realize() method uses hw_error().
      */
     dc->cannot_instantiate_with_device_add_yet = true;
 }

@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include <zlib.h> /* For crc32 */
 
 #include "hw/net/cadence_gem.h"
@@ -271,6 +272,11 @@ static inline unsigned tx_desc_get_wrap(unsigned *desc)
 static inline unsigned tx_desc_get_last(unsigned *desc)
 {
     return (desc[1] & DESC_1_TX_LAST) ? 1 : 0;
+}
+
+static inline void tx_desc_set_last(unsigned *desc)
+{
+    desc[1] |= DESC_1_TX_LAST;
 }
 
 static inline unsigned tx_desc_get_length(unsigned *desc)
@@ -663,6 +669,13 @@ static ssize_t gem_receive(NetClientState *nc, const uint8_t *buf, size_t size)
                  GEM_DMACFG_RBUFSZ_S) * GEM_DMACFG_RBUFSZ_MUL;
     bytes_to_copy = size;
 
+    /* Hardware allows a zero value here but warns against it. To avoid QEMU
+     * indefinite loops we enforce a minimum value here
+     */
+    if (rxbufsize < GEM_DMACFG_RBUFSZ_MUL) {
+        rxbufsize = GEM_DMACFG_RBUFSZ_MUL;
+    }
+
     /* Pad to minimum length. Assume FCS field is stripped, logic
      * below will increment it to the real minimum of 64 when
      * not FCS stripping
@@ -677,6 +690,10 @@ static ssize_t gem_receive(NetClientState *nc, const uint8_t *buf, size_t size)
     } else {
         unsigned crc_val;
 
+        if (size > sizeof(rxbuf) - sizeof(crc_val)) {
+            size = sizeof(rxbuf) - sizeof(crc_val);
+        }
+        bytes_to_copy = size;
         /* The application wants the FCS field, which QEMU does not provide.
          * We must try and calculate one.
          */
@@ -862,6 +879,14 @@ static void gem_transmit(CadenceGEMState *s)
             break;
         }
 
+        if (tx_desc_get_length(desc) > sizeof(tx_packet) - (p - tx_packet)) {
+            DB_PRINT("TX descriptor @ 0x%x too large: size 0x%x space 0x%x\n",
+                     (unsigned)packet_desc_addr,
+                     (unsigned)tx_desc_get_length(desc),
+                     sizeof(tx_packet) - (p - tx_packet));
+            break;
+        }
+
         /* Gather this fragment of the packet from "dma memory" to our contig.
          * buffer.
          */
@@ -919,6 +944,7 @@ static void gem_transmit(CadenceGEMState *s)
 
         /* read next descriptor */
         if (tx_desc_get_wrap(desc)) {
+            tx_desc_set_last(desc);
             packet_desc_addr = s->regs[GEM_TXQBASE];
         } else {
             packet_desc_addr += 8;
@@ -964,6 +990,7 @@ static void gem_reset(DeviceState *d)
 {
     int i;
     CadenceGEMState *s = CADENCE_GEM(d);
+    const uint8_t *a;
 
     DB_PRINT("\n");
 
@@ -981,6 +1008,11 @@ static void gem_reset(DeviceState *d)
     s->regs[GEM_DESCONF2] = 0x2ab13fff;
     s->regs[GEM_DESCONF5] = 0x002f2145;
     s->regs[GEM_DESCONF6] = 0x00000200;
+
+    /* Set MAC address */
+    a = &s->conf.macaddr.a[0];
+    s->regs[GEM_SPADDR1LO] = a[0] | (a[1] << 8) | (a[2] << 16) | (a[3] << 24);
+    s->regs[GEM_SPADDR1HI] = a[4] | (a[5] << 8);
 
     for (i = 0; i < 4; i++) {
         s->sar_active[i] = false;
@@ -1175,7 +1207,7 @@ static void gem_set_link(NetClientState *nc)
 }
 
 static NetClientInfo net_gem_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = gem_can_receive,
     .receive = gem_receive,

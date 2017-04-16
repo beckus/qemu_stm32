@@ -13,7 +13,9 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
-#include "qemu-common.h"
+#include "qemu/osdep.h"
+#include "qemu-version.h"
+#include "qemu/cutils.h"
 #include "monitor/monitor.h"
 #include "sysemu/sysemu.h"
 #include "qmp-commands.h"
@@ -24,6 +26,7 @@
 #include "sysemu/arch_init.h"
 #include "hw/qdev.h"
 #include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "qom/qom-qobject.h"
 #include "qapi/qmp/qerror.h"
 #include "qapi/qmp/qobject.h"
@@ -101,6 +104,13 @@ void qmp_quit(Error **errp)
 
 void qmp_stop(Error **errp)
 {
+    /* if there is a dump in background, we should wait until the dump
+     * finished */
+    if (dump_in_progress()) {
+        error_setg(errp, "There is a dump in process, please wait.");
+        return;
+    }
+
     if (runstate_check(RUN_STATE_INMIGRATE)) {
         autostart = 0;
     } else {
@@ -170,7 +180,16 @@ SpiceInfo *qmp_query_spice(Error **errp)
 void qmp_cont(Error **errp)
 {
     Error *local_err = NULL;
+    BlockBackend *blk;
     BlockDriverState *bs;
+    BdrvNextIterator it;
+
+    /* if there is a dump in background, we should wait until the dump
+     * finished */
+    if (dump_in_progress()) {
+        error_setg(errp, "There is a dump in process, please wait.");
+        return;
+    }
 
     if (runstate_needs_reset()) {
         error_setg(errp, "Resetting the Virtual Machine is required");
@@ -179,11 +198,24 @@ void qmp_cont(Error **errp)
         return;
     }
 
-    for (bs = bdrv_next(NULL); bs; bs = bdrv_next(bs)) {
-        bdrv_iostatus_reset(bs);
+    for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
+        blk_iostatus_reset(blk);
     }
-    for (bs = bdrv_next(NULL); bs; bs = bdrv_next(bs)) {
+
+    for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
         bdrv_add_key(bs, NULL, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
+            return;
+        }
+    }
+
+    /* Continuing after completed migration. Images have been inactivated to
+     * allow the destination to take control. Need to get control back now. */
+    if (runstate_check(RUN_STATE_FINISH_MIGRATE) ||
+        runstate_check(RUN_STATE_POSTMIGRATE))
+    {
+        bdrv_invalidate_cache_all(&local_err);
         if (local_err) {
             error_propagate(errp, local_err);
             return;
@@ -208,6 +240,7 @@ ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
     bool ambiguous = false;
     ObjectPropertyInfoList *props = NULL;
     ObjectProperty *prop;
+    ObjectPropertyIterator iter;
 
     obj = object_resolve_path(path, &ambiguous);
     if (obj == NULL) {
@@ -220,7 +253,8 @@ ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
         return NULL;
     }
 
-    QTAILQ_FOREACH(prop, &obj->properties, node) {
+    object_property_iter_init(&iter, obj);
+    while ((prop = object_property_iter_next(&iter))) {
         ObjectPropertyInfoList *entry = g_malloc0(sizeof(*entry));
 
         entry->value = g_malloc0(sizeof(ObjectPropertyInfo));
@@ -412,7 +446,8 @@ void qmp_change(const char *device, const char *target,
     if (strcmp(device, "vnc") == 0) {
         qmp_change_vnc(target, has_arg, arg, errp);
     } else {
-        qmp_change_blockdev(device, target, arg, errp);
+        qmp_blockdev_change_medium(device, target, has_arg, arg, false, 0,
+                                   errp);
     }
 }
 
@@ -500,6 +535,7 @@ DevicePropertyInfoList *qmp_device_list_properties(const char *typename,
     ObjectClass *klass;
     Object *obj;
     ObjectProperty *prop;
+    ObjectPropertyIterator iter;
     DevicePropertyInfoList *prop_list = NULL;
 
     klass = object_class_by_name(typename);
@@ -515,9 +551,21 @@ DevicePropertyInfoList *qmp_device_list_properties(const char *typename,
         return NULL;
     }
 
+    if (object_class_is_abstract(klass)) {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "name",
+                   "non-abstract device type");
+        return NULL;
+    }
+
+    if (DEVICE_CLASS(klass)->cannot_destroy_with_object_finalize_yet) {
+        error_setg(errp, "Can't list properties of device '%s'", typename);
+        return NULL;
+    }
+
     obj = object_new(typename);
 
-    QTAILQ_FOREACH(prop, &obj->properties, node) {
+    object_property_iter_init(&iter, obj);
+    while ((prop = object_property_iter_next(&iter))) {
         DevicePropertyInfo *info;
         DevicePropertyInfoList *entry;
 
@@ -602,65 +650,13 @@ void qmp_add_client(const char *protocol, const char *fdname,
     close(fd);
 }
 
-void object_add(const char *type, const char *id, const QDict *qdict,
-                Visitor *v, Error **errp)
-{
-    Object *obj;
-    ObjectClass *klass;
-    const QDictEntry *e;
-    Error *local_err = NULL;
-
-    klass = object_class_by_name(type);
-    if (!klass) {
-        error_setg(errp, "invalid object type: %s", type);
-        return;
-    }
-
-    if (!object_class_dynamic_cast(klass, TYPE_USER_CREATABLE)) {
-        error_setg(errp, "object type '%s' isn't supported by object-add",
-                   type);
-        return;
-    }
-
-    if (object_class_is_abstract(klass)) {
-        error_setg(errp, "object type '%s' is abstract", type);
-        return;
-    }
-
-    obj = object_new(type);
-    if (qdict) {
-        for (e = qdict_first(qdict); e; e = qdict_next(qdict, e)) {
-            object_property_set(obj, v, e->key, &local_err);
-            if (local_err) {
-                goto out;
-            }
-        }
-    }
-
-    object_property_add_child(object_get_objects_root(),
-                              id, obj, &local_err);
-    if (local_err) {
-        goto out;
-    }
-
-    user_creatable_complete(obj, &local_err);
-    if (local_err) {
-        object_property_del(object_get_objects_root(),
-                            id, &error_abort);
-        goto out;
-    }
-out:
-    if (local_err) {
-        error_propagate(errp, local_err);
-    }
-    object_unref(obj);
-}
 
 void qmp_object_add(const char *type, const char *id,
                     bool has_props, QObject *props, Error **errp)
 {
-    const QDict *pdict = NULL;
-    QmpInputVisitor *qiv;
+    QDict *pdict;
+    Visitor *v;
+    Object *obj;
 
     if (props) {
         pdict = qobject_to_qdict(props);
@@ -668,30 +664,23 @@ void qmp_object_add(const char *type, const char *id,
             error_setg(errp, QERR_INVALID_PARAMETER_TYPE, "props", "dict");
             return;
         }
+        QINCREF(pdict);
+    } else {
+        pdict = qdict_new();
     }
 
-    qiv = qmp_input_visitor_new(props);
-    object_add(type, id, pdict, qmp_input_get_visitor(qiv), errp);
-    qmp_input_visitor_cleanup(qiv);
+    v = qmp_input_visitor_new(QOBJECT(pdict), true);
+    obj = user_creatable_add_type(type, id, pdict, v, errp);
+    visit_free(v);
+    if (obj) {
+        object_unref(obj);
+    }
+    QDECREF(pdict);
 }
 
 void qmp_object_del(const char *id, Error **errp)
 {
-    Object *container;
-    Object *obj;
-
-    container = object_get_objects_root();
-    obj = object_resolve_path_component(container, id);
-    if (!obj) {
-        error_setg(errp, "object id not found");
-        return;
-    }
-
-    if (!user_creatable_can_be_deleted(USER_CREATABLE(obj), errp)) {
-        error_setg(errp, "%s is in use, can not be deleted", id);
-        return;
-    }
-    object_unparent(obj);
+    user_creatable_del(id, errp);
 }
 
 MemoryDeviceInfoList *qmp_query_memory_devices(Error **errp)

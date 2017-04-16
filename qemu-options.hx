@@ -33,15 +33,17 @@ DEF("machine", HAS_ARG, QEMU_OPTION_machine, \
     "                property accel=accel1[:accel2[:...]] selects accelerator\n"
     "                supported accelerators are kvm, xen, tcg (default: tcg)\n"
     "                kernel_irqchip=on|off controls accelerated irqchip support\n"
+    "                kernel_irqchip=on|off|split controls accelerated irqchip support (default=off)\n"
     "                vmport=on|off|auto controls emulation of vmport (default: auto)\n"
-    "                kvm_shadow_mem=size of KVM shadow MMU\n"
+    "                kvm_shadow_mem=size of KVM shadow MMU in bytes\n"
     "                dump-guest-core=on|off include guest memory in a core dump (default=on)\n"
     "                mem-merge=on|off controls memory merge support (default: on)\n"
-    "                iommu=on|off controls emulated Intel IOMMU (VT-d) support (default=off)\n"
     "                igd-passthru=on|off controls IGD GFX passthrough support (default=off)\n"
     "                aes-key-wrap=on|off controls support for AES key wrapping (default=on)\n"
     "                dea-key-wrap=on|off controls support for DEA key wrapping (default=on)\n"
-    "                suppress-vmdesc=on|off disables self-describing migration (default=off)\n",
+    "                suppress-vmdesc=on|off disables self-describing migration (default=off)\n"
+    "                nvdimm=on|off controls NVDIMM support (default=off)\n"
+    "                enforce-config-section=on|off enforce configuration section migration (default=off)\n",
     QEMU_ARCH_ALL)
 STEXI
 @item -machine [type=]@var{name}[,prop=@var{value}[,...]]
@@ -55,7 +57,7 @@ kvm, xen, or tcg can be available. By default, tcg is used. If there is more
 than one accelerator specified, the next one is used if the previous one fails
 to initialize.
 @item kernel_irqchip=on|off
-Enables in-kernel irqchip support for the chosen accelerator when available.
+Controls in-kernel irqchip support for the chosen accelerator when available.
 @item gfx_passthru=on|off
 Enables IGD GFX passthrough support for the chosen machine when available.
 @item vmport=on|off|auto
@@ -70,8 +72,6 @@ Include guest memory in a core dump. The default is on.
 Enables or disables memory merge support. This feature, when supported by
 the host, de-duplicates identical memory pages among VMs instances
 (enabled by default).
-@item iommu=on|off
-Enables or disables emulated Intel IOMMU (VT-d) support. The default is off.
 @item aes-key-wrap=on|off
 Enables or disables AES key wrapping support on s390-ccw hosts. This feature
 controls whether AES wrapping keys will be created to allow
@@ -80,6 +80,8 @@ execution of AES cryptographic functions.  The default is on.
 Enables or disables DEA key wrapping support on s390-ccw hosts. This feature
 controls whether DEA wrapping keys will be created to allow
 execution of DEA cryptographic functions.  The default is on.
+@item nvdimm=on|off
+Enables or disables NVDIMM support. The default is off.
 @end table
 ETEXI
 
@@ -381,6 +383,58 @@ Add device @var{driver}.  @var{prop}=@var{value} sets driver
 properties.  Valid properties depend on the driver.  To get help on
 possible drivers and properties, use @code{-device help} and
 @code{-device @var{driver},help}.
+
+Some drivers are:
+@item -device ipmi-bmc-sim,id=@var{id}[,slave_addr=@var{val}]
+
+Add an IPMI BMC.  This is a simulation of a hardware management
+interface processor that normally sits on a system.  It provides
+a watchdog and the ability to reset and power control the system.
+You need to connect this to an IPMI interface to make it useful
+
+The IPMI slave address to use for the BMC.  The default is 0x20.
+This address is the BMC's address on the I2C network of management
+controllers.  If you don't know what this means, it is safe to ignore
+it.
+
+@item -device ipmi-bmc-extern,id=@var{id},chardev=@var{id}[,slave_addr=@var{val}]
+
+Add a connection to an external IPMI BMC simulator.  Instead of
+locally emulating the BMC like the above item, instead connect
+to an external entity that provides the IPMI services.
+
+A connection is made to an external BMC simulator.  If you do this, it
+is strongly recommended that you use the "reconnect=" chardev option
+to reconnect to the simulator if the connection is lost.  Note that if
+this is not used carefully, it can be a security issue, as the
+interface has the ability to send resets, NMIs, and power off the VM.
+It's best if QEMU makes a connection to an external simulator running
+on a secure port on localhost, so neither the simulator nor QEMU is
+exposed to any outside network.
+
+See the "lanserv/README.vm" file in the OpenIPMI library for more
+details on the external interface.
+
+@item -device isa-ipmi-kcs,bmc=@var{id}[,ioport=@var{val}][,irq=@var{val}]
+
+Add a KCS IPMI interafce on the ISA bus.  This also adds a
+corresponding ACPI and SMBIOS entries, if appropriate.
+
+@table @option
+@item bmc=@var{id}
+The BMC to connect to, one of ipmi-bmc-sim or ipmi-bmc-extern above.
+@item ioport=@var{val}
+Define the I/O address of the interface.  The default is 0xca0 for KCS.
+@item irq=@var{val}
+Define the interrupt to use.  The default is 5.  To disable interrupts,
+set this to 0.
+@end table
+
+@item -device isa-ipmi-bt,bmc=@var{id}[,ioport=@var{val}][,irq=@var{val}]
+
+Like the KCS interface, but defines a BT interface.  The default port is
+0xe4 and the default interrupt is 5.
+
 ETEXI
 
 DEF("name", HAS_ARG, QEMU_OPTION_name,
@@ -512,7 +566,7 @@ These options have the same definition as they have in @option{-hdachs}.
 @var{discard} is one of "ignore" (or "off") or "unmap" (or "on") and controls whether @dfn{discard} (also known as @dfn{trim} or @dfn{unmap}) requests are ignored or passed to the filesystem.  Some machine types may not support discard requests.
 @item format=@var{format}
 Specify which disk @var{format} will be used rather than detecting
-the format.  Can be used to specifiy format=raw to avoid interpreting
+the format.  Can be used to specify format=raw to avoid interpreting
 an untrusted format header.
 @item serial=@var{serial}
 This option specifies the serial number to assign to the device.
@@ -837,7 +891,7 @@ mouse. Also overrides the PS/2 mouse emulation when activated.
 
 @item disk:[format=@var{format}]:@var{file}
 Mass storage device based on file. The optional @var{format} argument
-will be used rather than detecting the format. Can be used to specifiy
+will be used rather than detecting the format. Can be used to specify
 @code{format=raw} to avoid interpreting an untrusted format header.
 
 @item host:@var{bus}.@var{addr}
@@ -873,10 +927,25 @@ ETEXI
 
 DEF("display", HAS_ARG, QEMU_OPTION_display,
     "-display sdl[,frame=on|off][,alt_grab=on|off][,ctrl_grab=on|off]\n"
-    "            [,window_close=on|off]|curses|none|\n"
-    "            gtk[,grab_on_hover=on|off]|\n"
-    "            vnc=<display>[,<optargs>]\n"
-    "                select display type\n", QEMU_ARCH_ALL)
+    "            [,window_close=on|off][,gl=on|off]|curses|none|\n"
+    "-display gtk[,grab_on_hover=on|off][,gl=on|off]|\n"
+    "-display vnc=<display>[,<optargs>]\n"
+    "-display curses\n"
+    "-display none"
+    "                select display type\n"
+    "The default display is equivalent to\n"
+#if defined(CONFIG_GTK)
+            "\t\"-display gtk\"\n"
+#elif defined(CONFIG_SDL)
+            "\t\"-display sdl\"\n"
+#elif defined(CONFIG_COCOA)
+            "\t\"-display cocoa\"\n"
+#elif defined(CONFIG_VNC)
+            "\t\"-vnc localhost:0,to=99,id=default\"\n"
+#else
+            "\t\"-display none\"\n"
+#endif
+    , QEMU_ARCH_ALL)
 STEXI
 @item -display @var{type}
 @findex -display
@@ -923,7 +992,7 @@ the console and monitor.
 ETEXI
 
 DEF("curses", 0, QEMU_OPTION_curses,
-    "-curses         use a curses/ncurses interface instead of SDL\n",
+    "-curses         shorthand for -display curses\n",
     QEMU_ARCH_ALL)
 STEXI
 @item -curses
@@ -973,7 +1042,7 @@ Disable SDL window close capability.
 ETEXI
 
 DEF("sdl", 0, QEMU_OPTION_sdl,
-    "-sdl            enable SDL\n", QEMU_ARCH_ALL)
+    "-sdl            shorthand for -display sdl\n", QEMU_ARCH_ALL)
 STEXI
 @item -sdl
 @findex -sdl
@@ -995,6 +1064,7 @@ DEF("spice", HAS_ARG, QEMU_OPTION_spice,
     "       [,streaming-video=[off|all|filter]][,disable-copy-paste]\n"
     "       [,disable-agent-file-xfer][,agent-mouse=[on|off]]\n"
     "       [,playback-compression=[on|off]][,seamless-migration=[on|off]]\n"
+    "       [,gl=[on|off]]\n"
     "   enable spice\n"
     "   at least one of {port, tls-port} is mandatory\n",
     QEMU_ARCH_ALL)
@@ -1086,6 +1156,9 @@ Enable/disable audio stream compression (using celt 0.5.1).  Default is on.
 @item seamless-migration=[on|off]
 Enable/disable spice seamless migration. Default is off.
 
+@item gl=[on|off]
+Enable/disable OpenGL context. Default is off.
+
 @end table
 ETEXI
 
@@ -1166,7 +1239,7 @@ Set the initial graphical resolution and depth (PPC, SPARC only).
 ETEXI
 
 DEF("vnc", HAS_ARG, QEMU_OPTION_vnc ,
-    "-vnc display    start a VNC server on display\n", QEMU_ARCH_ALL)
+    "-vnc <display>  shorthand for -display vnc=<display>\n", QEMU_ARCH_ALL)
 STEXI
 @item -vnc @var{display}[,@var{option}[,@var{option}[,...]]]
 @findex -vnc
@@ -1179,6 +1252,13 @@ parameter to set the keyboard layout if you are not using en-us. Valid
 syntax for the @var{display} is
 
 @table @option
+
+@item to=@var{L}
+
+With this option, QEMU will try next available VNC @var{display}s, until the
+number @var{L}, if the origianlly defined "-vnc @var{display}" is not
+available, e.g. port 5900+@var{display} is already used by another
+application. By default, to=0.
 
 @item @var{host}:@var{d}
 
@@ -1349,6 +1429,14 @@ everybody else.  'ignore' completely ignores the shared flag and
 allows everybody connect unconditionally.  Doesn't conform to the rfb
 spec but is traditional QEMU behavior.
 
+@item key-delay-ms
+
+Set keyboard delay, for key down and key up events, in milliseconds.
+Default is 1.  Keyboards are low-bandwidth devices, so this slowdown
+can help the device and guest to keep up and not lose events in case
+events are arriving in bulk.  Possible causes for the latter are flaky
+network connections, or scripts for automated testing.
+
 @end table
 ETEXI
 
@@ -1416,6 +1504,10 @@ ACPI headers (possible overridden by other options).
 For data=, only data
 portion of the table is used, all header information is specified in the
 command line.
+If a SLIC table is supplied to QEMU, then the SLIC's oem_id and oem_table_id
+fields will override the same in the RSDT and the FADT (a.k.a. FACP), in order
+to ensure the field matches required by the Microsoft SLIC spec and the ACPI
+spec.
 ETEXI
 
 DEF("smbios", HAS_ARG, QEMU_OPTION_smbios,
@@ -1486,8 +1578,10 @@ DEF("smb", HAS_ARG, QEMU_OPTION_smb, "", QEMU_ARCH_ALL)
 
 DEF("netdev", HAS_ARG, QEMU_OPTION_netdev,
 #ifdef CONFIG_SLIRP
-    "-netdev user,id=str[,net=addr[/mask]][,host=addr][,restrict=on|off]\n"
-    "         [,hostname=host][,dhcpstart=addr][,dns=addr][,dnssearch=domain][,tftp=dir]\n"
+    "-netdev user,id=str[,ipv4[=on|off]][,net=addr[/mask]][,host=addr]\n"
+    "         [,ipv6[=on|off]][,ipv6-net=addr[/int]][,ipv6-host=addr]\n"
+    "         [,restrict=on|off][,hostname=host][,dhcpstart=addr]\n"
+    "         [,dns=addr][,ipv6-dns=addr][,dnssearch=domain][,tftp=dir]\n"
     "         [,bootfile=f][,hostfwd=rule][,guestfwd=rule]"
 #ifndef _WIN32
                                              "[,smb=dir[,smbserver=addr]]\n"
@@ -1502,6 +1596,7 @@ DEF("netdev", HAS_ARG, QEMU_OPTION_netdev,
     "-netdev tap,id=str[,fd=h][,fds=x:y:...:z][,ifname=name][,script=file][,downscript=dfile]\n"
     "         [,helper=helper][,sndbuf=nbytes][,vnet_hdr=on|off][,vhost=on|off]\n"
     "         [,vhostfd=h][,vhostfds=x:y:...:z][,vhostforce=on|off][,queues=n]\n"
+    "         [,poll-us=n]\n"
     "                configure a host TAP network backend with ID 'str'\n"
     "                use network scripts 'file' (default=" DEFAULT_NETWORK_SCRIPT ")\n"
     "                to configure it and 'dfile' (default=" DEFAULT_NETWORK_DOWN_SCRIPT ")\n"
@@ -1521,6 +1616,8 @@ DEF("netdev", HAS_ARG, QEMU_OPTION_netdev,
     "                use 'vhostfd=h' to connect to an already opened vhost net device\n"
     "                use 'vhostfds=x:y:...:z to connect to multiple already opened vhost net devices\n"
     "                use 'queues=n' to specify the number of queues to be created for multiqueue TAP\n"
+    "                use 'poll-us=n' to speciy the maximum number of microseconds that could be\n"
+    "                spent on busy polling for vhost net\n"
     "-netdev bridge,id=str[,br=bridge][,helper=helper]\n"
     "                configure a host TAP network backend with ID 'str' that is\n"
     "                connected to a bridge (default=" DEFAULT_BRIDGE_INTERFACE ")\n"
@@ -1635,6 +1732,9 @@ Connect user mode stack to VLAN @var{n} (@var{n} = 0 is the default).
 @itemx name=@var{name}
 Assign symbolic name for use in monitor commands.
 
+@option{ipv4} and @option{ipv6} specify that either IPv4 or IPv6 must
+be enabled.  If neither is specified both protocols are enabled.
+
 @item net=@var{addr}[/@var{mask}]
 Set IP network address the guest will see. Optionally specify the netmask,
 either in the form a.b.c.d or as number of valid top-most bits. Default is
@@ -1643,6 +1743,16 @@ either in the form a.b.c.d or as number of valid top-most bits. Default is
 @item host=@var{addr}
 Specify the guest-visible address of the host. Default is the 2nd IP in the
 guest network, i.e. x.x.x.2.
+
+@item ipv6-net=@var{addr}[/@var{int}]
+Set IPv6 network address the guest will see (default is fec0::/64). The
+network prefix is given in the usual hexadecimal IPv6 address
+notation. The prefix size is optional, and is given as the number of
+valid top-most bits (default is 64).
+
+@item ipv6-host=@var{addr}
+Specify the guest-visible IPv6 address of the host. Default is the 2nd IPv6 in
+the guest network, i.e. xxxx::2.
 
 @item restrict=on|off
 If this option is enabled, the guest will be isolated, i.e. it will not be
@@ -1660,6 +1770,11 @@ is the 15th to 31st IP in the guest network, i.e. x.x.x.15 to x.x.x.31.
 Specify the guest-visible address of the virtual nameserver. The address must
 be different from the host address. Default is the 3rd IP in the guest network,
 i.e. x.x.x.3.
+
+@item ipv6-dns=@var{addr}
+Specify the guest-visible address of the IPv6 virtual nameserver. The address
+must be different from the host address. Default is the 3rd IP in the guest
+network, i.e. xxxx::3.
 
 @item dnssearch=@var{domain}
 Provides an entry for the domain-search list sent by the built-in
@@ -2012,6 +2127,7 @@ qemu -m 512 -object memory-backend-file,id=mem,size=512M,mem-path=/hugetlbfs,sha
 Dump network traffic on VLAN @var{n} to file @var{file} (@file{qemu-vlan0.pcap} by default).
 At most @var{len} bytes (64k by default) per packet are stored. The file format is
 libpcap, so it can be analyzed with tools such as tcpdump or Wireshark.
+Note: For devices created with '-netdev', use '-object filter-dump,...' instead.
 
 @item -net none
 Indicate that no network devices should be configured. It is used to
@@ -2032,40 +2148,43 @@ The general form of a character device option is:
 ETEXI
 
 DEF("chardev", HAS_ARG, QEMU_OPTION_chardev,
-    "-chardev null,id=id[,mux=on|off]\n"
+    "-chardev null,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
     "-chardev socket,id=id[,host=host],port=port[,to=to][,ipv4][,ipv6][,nodelay][,reconnect=seconds]\n"
-    "         [,server][,nowait][,telnet][,reconnect=seconds][,mux=on|off] (tcp)\n"
-    "-chardev socket,id=id,path=path[,server][,nowait][,telnet][,reconnect=seconds][,mux=on|off] (unix)\n"
+    "         [,server][,nowait][,telnet][,reconnect=seconds][,mux=on|off]\n"
+    "         [,logfile=PATH][,logappend=on|off][,tls-creds=ID] (tcp)\n"
+    "-chardev socket,id=id,path=path[,server][,nowait][,telnet][,reconnect=seconds]\n"
+    "         [,mux=on|off][,logfile=PATH][,logappend=on|off] (unix)\n"
     "-chardev udp,id=id[,host=host],port=port[,localaddr=localaddr]\n"
     "         [,localport=localport][,ipv4][,ipv6][,mux=on|off]\n"
-    "-chardev msmouse,id=id[,mux=on|off]\n"
+    "         [,logfile=PATH][,logappend=on|off]\n"
+    "-chardev msmouse,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
     "-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]\n"
-    "         [,mux=on|off]\n"
-    "-chardev ringbuf,id=id[,size=size]\n"
-    "-chardev file,id=id,path=path[,mux=on|off]\n"
-    "-chardev pipe,id=id,path=path[,mux=on|off]\n"
+    "         [,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev ringbuf,id=id[,size=size][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev file,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev pipe,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
 #ifdef _WIN32
-    "-chardev console,id=id[,mux=on|off]\n"
-    "-chardev serial,id=id,path=path[,mux=on|off]\n"
+    "-chardev console,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev serial,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
 #else
-    "-chardev pty,id=id[,mux=on|off]\n"
-    "-chardev stdio,id=id[,mux=on|off][,signal=on|off]\n"
+    "-chardev pty,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev stdio,id=id[,mux=on|off][,signal=on|off][,logfile=PATH][,logappend=on|off]\n"
 #endif
 #ifdef CONFIG_BRLAPI
-    "-chardev braille,id=id[,mux=on|off]\n"
+    "-chardev braille,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
 #endif
 #if defined(__linux__) || defined(__sun__) || defined(__FreeBSD__) \
         || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-    "-chardev serial,id=id,path=path[,mux=on|off]\n"
-    "-chardev tty,id=id,path=path[,mux=on|off]\n"
+    "-chardev serial,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev tty,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
 #endif
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__DragonFly__)
-    "-chardev parallel,id=id,path=path[,mux=on|off]\n"
-    "-chardev parport,id=id,path=path[,mux=on|off]\n"
+    "-chardev parallel,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev parport,id=id,path=path[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
 #endif
 #if defined(CONFIG_SPICE)
-    "-chardev spicevmc,id=id,name=name[,debug=debug]\n"
-    "-chardev spiceport,id=id,name=name[,debug=debug]\n"
+    "-chardev spicevmc,id=id,name=name[,debug=debug][,logfile=PATH][,logappend=on|off]\n"
+    "-chardev spiceport,id=id,name=name[,debug=debug][,logfile=PATH][,logappend=on|off]\n"
 #endif
     , QEMU_ARCH_ALL
 )
@@ -2098,16 +2217,62 @@ All devices must have an id, which can be any string up to 127 characters long.
 It is used to uniquely identify this device in other command line directives.
 
 A character device may be used in multiplexing mode by multiple front-ends.
-The key sequence of @key{Control-a} and @key{c} will rotate the input focus
-between attached front-ends. Specify @option{mux=on} to enable this mode.
+Specify @option{mux=on} to enable this mode.
+A multiplexer is a "1:N" device, and here the "1" end is your specified chardev
+backend, and the "N" end is the various parts of QEMU that can talk to a chardev.
+If you create a chardev with @option{id=myid} and @option{mux=on}, QEMU will
+create a multiplexer with your specified ID, and you can then configure multiple
+front ends to use that chardev ID for their input/output. Up to four different
+front ends can be connected to a single multiplexed chardev. (Without
+multiplexing enabled, a chardev can only be used by a single front end.)
+For instance you could use this to allow a single stdio chardev to be used by
+two serial ports and the QEMU monitor:
 
-Options to each backend are described below.
+@example
+-chardev stdio,mux=on,id=char0 \
+-mon chardev=char0,mode=readline,default \
+-serial chardev:char0 \
+-serial chardev:char0
+@end example
+
+You can have more than one multiplexer in a system configuration; for instance
+you could have a TCP port multiplexed between UART 0 and UART 1, and stdio
+multiplexed between the QEMU monitor and a parallel port:
+
+@example
+-chardev stdio,mux=on,id=char0 \
+-mon chardev=char0,mode=readline,default \
+-parallel chardev:char0 \
+-chardev tcp,...,mux=on,id=char1 \
+-serial chardev:char1 \
+-serial chardev:char1
+@end example
+
+When you're using a multiplexed character device, some escape sequences are
+interpreted in the input. @xref{mux_keys, Keys in the character backend
+multiplexer}.
+
+Note that some other command line options may implicitly create multiplexed
+character backends; for instance @option{-serial mon:stdio} creates a
+multiplexed stdio backend connected to the serial port and the QEMU monitor,
+and @option{-nographic} also multiplexes the console and the monitor to
+stdio.
+
+There is currently no support for multiplexing in the other direction
+(where a single QEMU front end takes input and output from multiple chardevs).
+
+Every backend supports the @option{logfile} option, which supplies the path
+to a file to record all data transmitted via the backend. The @option{logappend}
+option controls whether the log file will be truncated or appended to when
+opened.
+
+Further options to each backend are described below.
 
 @item -chardev null ,id=@var{id}
 A void device. This device will not emit any data, and will drop any data it
 receives. The null backend does not take any options.
 
-@item -chardev socket ,id=@var{id} [@var{TCP options} or @var{unix options}] [,server] [,nowait] [,telnet] [,reconnect=@var{seconds}]
+@item -chardev socket ,id=@var{id} [@var{TCP options} or @var{unix options}] [,server] [,nowait] [,telnet] [,reconnect=@var{seconds}] [,tls-creds=@var{id}]
 
 Create a two-way stream socket, which can be either a TCP or a unix socket. A
 unix socket will be created if @option{path} is specified. Behaviour is
@@ -2124,6 +2289,11 @@ escape sequences.
 @option{reconnect} sets the timeout for reconnecting on non-server sockets when
 the remote end goes away.  qemu will delay this many seconds and then attempt
 to reconnect.  Zero disables reconnecting, and is the default.
+
+@option{tls-creds} requests enablement of the TLS protocol for encryption,
+and specifies the id of the TLS credentials to use for the handshake. The
+credentials must be previously created with the @option{-object tls-creds}
+argument.
 
 TCP and unix socket options are given below:
 
@@ -2724,13 +2894,32 @@ ETEXI
 
 DEF("fw_cfg", HAS_ARG, QEMU_OPTION_fwcfg,
     "-fw_cfg [name=]<name>,file=<file>\n"
-    "                add named fw_cfg entry from file\n",
+    "                add named fw_cfg entry with contents from file\n"
+    "-fw_cfg [name=]<name>,string=<str>\n"
+    "                add named fw_cfg entry with contents from string\n",
     QEMU_ARCH_ALL)
 STEXI
+
 @item -fw_cfg [name=]@var{name},file=@var{file}
 @findex -fw_cfg
-Add named fw_cfg entry from file. @var{name} determines the name of
-the entry in the fw_cfg file directory exposed to the guest.
+Add named fw_cfg entry with contents from file @var{file}.
+
+@item -fw_cfg [name=]@var{name},string=@var{str}
+Add named fw_cfg entry with contents from string @var{str}.
+
+The terminating NUL character of the contents of @var{str} will not be
+included as part of the fw_cfg item data. To insert contents with
+embedded NUL characters, you have to use the @var{file} parameter.
+
+The fw_cfg entries are passed by QEMU through to the guest.
+
+Example:
+@example
+    -fw_cfg name=opt/com.mycompany/blob,file=./my_blob.bin
+@end example
+creates an fw_cfg entry named opt/com.mycompany/blob with contents
+from ./my_blob.bin.
+
 ETEXI
 
 DEF("serial", HAS_ARG, QEMU_OPTION_serial, \
@@ -3015,6 +3204,24 @@ STEXI
 Output log in @var{logfile} instead of to stderr
 ETEXI
 
+DEF("dfilter", HAS_ARG, QEMU_OPTION_DFILTER, \
+    "-dfilter range,..  filter debug output to range of addresses (useful for -d cpu,exec,etc..)\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -dfilter @var{range1}[,...]
+@findex -dfilter
+Filter debug output to that relevant to a range of target addresses. The filter
+spec can be either @var{start}+@var{size}, @var{start}-@var{size} or
+@var{start}..@var{end} where @var{start} @var{end} and @var{size} are the
+addresses and sizes required. For example:
+@example
+    -dfilter 0x8000..0x8fff,0xffffffc000080000+0x200,0xffffffc000060000-0x1000
+@end example
+Will dump output for any code in the 0x1000 sized block starting at 0x8000 and
+the 0x200 sized block starting at 0xffffffc000080000 and another 0x1000 sized
+block starting at 0xffffffc00005f000.
+ETEXI
+
 DEF("L", HAS_ARG, QEMU_OPTION_L, \
     "-L path         set the directory for the BIOS, VGA BIOS and keymaps\n",
     QEMU_ARCH_ALL)
@@ -3022,6 +3229,8 @@ STEXI
 @item -L  @var{path}
 @findex -L
 Set the directory for the BIOS, VGA BIOS and keymaps.
+
+To list all the data directories, use @code{-L help}.
 ETEXI
 
 DEF("bios", HAS_ARG, QEMU_OPTION_bios, \
@@ -3151,12 +3360,12 @@ re-inject them.
 ETEXI
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
-    "-icount [shift=N|auto][,align=on|off][,sleep=no]\n" \
+    "-icount [shift=N|auto][,align=on|off][,sleep=on|off,rr=record|replay,rrfile=<filename>]\n" \
     "                enable virtual instruction counter with 2^N clock ticks per\n" \
     "                instruction, enable aligning the host and virtual clocks\n" \
     "                or disable real time cpu sleeping\n", QEMU_ARCH_ALL)
 STEXI
-@item -icount [shift=@var{N}|auto]
+@item -icount [shift=@var{N}|auto][,rr=record|replay,rrfile=@var{filename}]
 @findex -icount
 Enable virtual instruction counter.  The virtual cpu will execute one
 instruction every 2^@var{N} ns of virtual time.  If @code{auto} is specified
@@ -3164,8 +3373,8 @@ then the virtual cpu speed will be automatically adjusted to keep virtual
 time within a few seconds of real time.
 
 When the virtual cpu is sleeping, the virtual time will advance at default
-speed unless @option{sleep=no} is specified.
-With @option{sleep=no}, the virtual time will jump to the next timer deadline
+speed unless @option{sleep=on|off} is specified.
+With @option{sleep=on|off}, the virtual time will jump to the next timer deadline
 instantly whenever the virtual cpu goes to sleep mode and will not advance
 if no timer is enabled. This behavior give deterministic execution times from
 the guest point of view.
@@ -3185,6 +3394,10 @@ Currently this option does not work when @option{shift} is @code{auto}.
 Note: The sync algorithm will work for those shift values for which
 the guest clock runs ahead of the host clock. Typically this happens
 when the shift value is high (how high depends on the host machine).
+
+When @option{rr} option is specified deterministic record/replay is enabled.
+Replay log is written into @var{filename} file in record mode and
+read from this file in replay mode.
 ETEXI
 
 DEF("watchdog", HAS_ARG, QEMU_OPTION_watchdog, \
@@ -3465,30 +3678,15 @@ config files on @var{sysconfdir}, but won't make it skip the QEMU-provided confi
 files from @var{datadir}.
 ETEXI
 DEF("trace", HAS_ARG, QEMU_OPTION_trace,
-    "-trace [events=<file>][,file=<file>]\n"
+    "-trace [[enable=]<pattern>][,events=<file>][,file=<file>]\n"
     "                specify tracing options\n",
     QEMU_ARCH_ALL)
 STEXI
 HXCOMM This line is not accurate, as some sub-options are backend-specific but
 HXCOMM HX does not support conditional compilation of text.
-@item -trace [events=@var{file}][,file=@var{file}]
+@item -trace [[enable=]@var{pattern}][,events=@var{file}][,file=@var{file}]
 @findex -trace
-
-Specify tracing options.
-
-@table @option
-@item events=@var{file}
-Immediately enable events listed in @var{file}.
-The file must contain one event name (as listed in the @var{trace-events} file)
-per line.
-This option is only available if QEMU has been compiled with
-either @var{simple} or @var{stderr} tracing backend.
-@item file=@var{file}
-Log output traces to @var{file}.
-
-This option is only available if QEMU has been compiled with
-the @var{simple} tracing backend.
-@end table
+@include qemu-option-trace.texi
 ETEXI
 
 HXCOMM Internal use
@@ -3616,7 +3814,7 @@ expensive operation that consumes random pool entropy, so it is
 recommended that a persistent set of parameters be generated
 upfront and saved.
 
-@item -object tls-creds-x509,id=@var{id},endpoint=@var{endpoint},dir=@var{/path/to/cred/dir},verify-peer=@var{on|off}
+@item -object tls-creds-x509,id=@var{id},endpoint=@var{endpoint},dir=@var{/path/to/cred/dir},verify-peer=@var{on|off},passwordid=@var{id}
 
 Creates a TLS anonymous credentials object, which can be used to provide
 TLS support on network backends. The @option{id} parameter is a unique
@@ -3642,6 +3840,129 @@ providing the x509 certificates. The certificates must be stored
 in PEM format, in filenames @var{ca-cert.pem}, @var{ca-crl.pem} (optional),
 @var{server-cert.pem} (only servers), @var{server-key.pem} (only servers),
 @var{client-cert.pem} (only clients), and @var{client-key.pem} (only clients).
+
+For the @var{server-key.pem} and @var{client-key.pem} files which
+contain sensitive private keys, it is possible to use an encrypted
+version by providing the @var{passwordid} parameter. This provides
+the ID of a previously created @code{secret} object containing the
+password for decryption.
+
+@item -object filter-buffer,id=@var{id},netdev=@var{netdevid},interval=@var{t}[,queue=@var{all|rx|tx}][,status=@var{on|off}]
+
+Interval @var{t} can't be 0, this filter batches the packet delivery: all
+packets arriving in a given interval on netdev @var{netdevid} are delayed
+until the end of the interval. Interval is in microseconds.
+@option{status} is optional that indicate whether the netfilter is
+on (enabled) or off (disabled), the default status for netfilter will be 'on'.
+
+queue @var{all|rx|tx} is an option that can be applied to any netfilter.
+
+@option{all}: the filter is attached both to the receive and the transmit
+              queue of the netdev (default).
+
+@option{rx}: the filter is attached to the receive queue of the netdev,
+             where it will receive packets sent to the netdev.
+
+@option{tx}: the filter is attached to the transmit queue of the netdev,
+             where it will receive packets sent by the netdev.
+
+@item -object filter-mirror,id=@var{id},netdev=@var{netdevid},outdev=@var{chardevid}[,queue=@var{all|rx|tx}]
+
+filter-mirror on netdev @var{netdevid},mirror net packet to chardev
+@var{chardevid}
+
+@item -object filter-redirector,id=@var{id},netdev=@var{netdevid},indev=@var{chardevid},
+outdev=@var{chardevid}[,queue=@var{all|rx|tx}]
+
+filter-redirector on netdev @var{netdevid},redirect filter's net packet to chardev
+@var{chardevid},and redirect indev's packet to filter.
+Create a filter-redirector we need to differ outdev id from indev id, id can not
+be the same. we can just use indev or outdev, but at least one of indev or outdev
+need to be specified.
+
+@item -object filter-dump,id=@var{id},netdev=@var{dev},file=@var{filename}][,maxlen=@var{len}]
+
+Dump the network traffic on netdev @var{dev} to the file specified by
+@var{filename}. At most @var{len} bytes (64k by default) per packet are stored.
+The file format is libpcap, so it can be analyzed with tools such as tcpdump
+or Wireshark.
+
+@item -object secret,id=@var{id},data=@var{string},format=@var{raw|base64}[,keyid=@var{secretid},iv=@var{string}]
+@item -object secret,id=@var{id},file=@var{filename},format=@var{raw|base64}[,keyid=@var{secretid},iv=@var{string}]
+
+Defines a secret to store a password, encryption key, or some other sensitive
+data. The sensitive data can either be passed directly via the @var{data}
+parameter, or indirectly via the @var{file} parameter. Using the @var{data}
+parameter is insecure unless the sensitive data is encrypted.
+
+The sensitive data can be provided in raw format (the default), or base64.
+When encoded as JSON, the raw format only supports valid UTF-8 characters,
+so base64 is recommended for sending binary data. QEMU will convert from
+which ever format is provided to the format it needs internally. eg, an
+RBD password can be provided in raw format, even though it will be base64
+encoded when passed onto the RBD sever.
+
+For added protection, it is possible to encrypt the data associated with
+a secret using the AES-256-CBC cipher. Use of encryption is indicated
+by providing the @var{keyid} and @var{iv} parameters. The @var{keyid}
+parameter provides the ID of a previously defined secret that contains
+the AES-256 decryption key. This key should be 32-bytes long and be
+base64 encoded. The @var{iv} parameter provides the random initialization
+vector used for encryption of this particular secret and should be a
+base64 encrypted string of the 16-byte IV.
+
+The simplest (insecure) usage is to provide the secret inline
+
+@example
+
+ # $QEMU -object secret,id=sec0,data=letmein,format=raw
+
+@end example
+
+The simplest secure usage is to provide the secret via a file
+
+ # echo -n "letmein" > mypasswd.txt
+ # $QEMU -object secret,id=sec0,file=mypasswd.txt,format=raw
+
+For greater security, AES-256-CBC should be used. To illustrate usage,
+consider the openssl command line tool which can encrypt the data. Note
+that when encrypting, the plaintext must be padded to the cipher block
+size (32 bytes) using the standard PKCS#5/6 compatible padding algorithm.
+
+First a master key needs to be created in base64 encoding:
+
+@example
+ # openssl rand -base64 32 > key.b64
+ # KEY=$(base64 -d key.b64 | hexdump  -v -e '/1 "%02X"')
+@end example
+
+Each secret to be encrypted needs to have a random initialization vector
+generated. These do not need to be kept secret
+
+@example
+ # openssl rand -base64 16 > iv.b64
+ # IV=$(base64 -d iv.b64 | hexdump  -v -e '/1 "%02X"')
+@end example
+
+The secret to be defined can now be encrypted, in this case we're
+telling openssl to base64 encode the result, but it could be left
+as raw bytes if desired.
+
+@example
+ # SECRET=$(echo -n "letmein" |
+            openssl enc -aes-256-cbc -a -K $KEY -iv $IV)
+@end example
+
+When launching QEMU, create a master secret pointing to @code{key.b64}
+and specify that to be used to decrypt the user password. Pass the
+contents of @code{iv.b64} to the second secret
+
+@example
+ # $QEMU \
+     -object secret,id=secmaster0,format=base64,file=key.b64 \
+     -object secret,id=sec0,keyid=secmaster0,format=base64,\
+         data=$SECRET,iv=$(<iv.b64)
+@end example
 
 @end table
 

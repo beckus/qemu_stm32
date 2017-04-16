@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/msix.h"
@@ -42,6 +43,7 @@ struct rocker {
 
     /* switch configuration */
     char *name;                  /* switch name */
+    char *world_name;            /* world name */
     uint32_t fp_ports;           /* front-panel port count */
     NICPeers *fp_ports_peers;
     MACAddr fp_start_macaddr;    /* front-panel port 0 mac addr */
@@ -101,8 +103,7 @@ RockerSwitch *qmp_query_rocker(const char *name, Error **errp)
 
     r = rocker_find(name);
     if (!r) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s not found", name);
+        error_setg(errp, "rocker %s not found", name);
         return NULL;
     }
 
@@ -122,8 +123,7 @@ RockerPortList *qmp_query_rocker_ports(const char *name, Error **errp)
 
     r = rocker_find(name);
     if (!r) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s not found", name);
+        error_setg(errp, "rocker %s not found", name);
         return NULL;
     }
 
@@ -234,6 +234,9 @@ static int tx_consume(Rocker *r, DescInfo *info)
         frag_addr = rocker_tlv_get_le64(tlvs[ROCKER_TLV_TX_FRAG_ATTR_ADDR]);
         frag_len = rocker_tlv_get_le16(tlvs[ROCKER_TLV_TX_FRAG_ATTR_LEN]);
 
+        if (iovcnt >= ROCKER_TX_FRAGS_MAX) {
+            goto err_too_many_frags;
+        }
         iov[iovcnt].iov_len = frag_len;
         iov[iovcnt].iov_base = g_malloc(frag_len);
         if (!iov[iovcnt].iov_base) {
@@ -246,10 +249,7 @@ static int tx_consume(Rocker *r, DescInfo *info)
             err = -ROCKER_ENXIO;
             goto err_bad_io;
         }
-
-        if (++iovcnt > ROCKER_TX_FRAGS_MAX) {
-            goto err_too_many_frags;
-        }
+        iovcnt++;
     }
 
     if (iovcnt) {
@@ -401,7 +401,13 @@ static int cmd_set_port_settings(Rocker *r,
 
     if (tlvs[ROCKER_TLV_CMD_PORT_SETTINGS_MODE]) {
         mode = rocker_tlv_get_u8(tlvs[ROCKER_TLV_CMD_PORT_SETTINGS_MODE]);
-        fp_port_set_world(fp_port, r->worlds[mode]);
+        if (mode >= ROCKER_WORLD_TYPE_MAX) {
+            return -ROCKER_EINVAL;
+        }
+        /* We don't support world change. */
+        if (!fp_port_check_world(fp_port, r->worlds[mode])) {
+            return -ROCKER_EINVAL;
+        }
     }
 
     if (tlvs[ROCKER_TLV_CMD_PORT_SETTINGS_LEARNING]) {
@@ -1281,6 +1287,18 @@ static void rocker_msix_uninit(Rocker *r)
     rocker_msix_vectors_unuse(r, ROCKER_MSIX_VEC_COUNT(r->fp_ports));
 }
 
+static World *rocker_world_type_by_name(Rocker *r, const char *name)
+{
+    int i;
+
+    for (i = 0; i < ROCKER_WORLD_TYPE_MAX; i++) {
+        if (strcmp(name, world_name(r->worlds[i])) == 0) {
+            return r->worlds[i];
+	}
+    }
+    return NULL;
+}
+
 static int pci_rocker_init(PCIDevice *dev)
 {
     Rocker *r = to_rocker(dev);
@@ -1292,12 +1310,25 @@ static int pci_rocker_init(PCIDevice *dev)
     /* allocate worlds */
 
     r->worlds[ROCKER_WORLD_TYPE_OF_DPA] = of_dpa_world_alloc(r);
-    r->world_dflt = r->worlds[ROCKER_WORLD_TYPE_OF_DPA];
 
     for (i = 0; i < ROCKER_WORLD_TYPE_MAX; i++) {
         if (!r->worlds[i]) {
+            err = -ENOMEM;
             goto err_world_alloc;
         }
+    }
+
+    if (!r->world_name) {
+        r->world_name = g_strdup(world_name(r->worlds[ROCKER_WORLD_TYPE_OF_DPA]));
+    }
+
+    r->world_dflt = rocker_world_type_by_name(r, r->world_name);
+    if (!r->world_dflt) {
+        fprintf(stderr,
+                "rocker: requested world \"%s\" does not exist\n",
+                r->world_name);
+        err = -EINVAL;
+        goto err_world_type_by_name;
     }
 
     /* set up memory-mapped region at BAR0 */
@@ -1433,6 +1464,7 @@ err_duplicate:
 err_msix_init:
     object_unparent(OBJECT(&r->msix_bar));
     object_unparent(OBJECT(&r->mmio));
+err_world_type_by_name:
 err_world_alloc:
     for (i = 0; i < ROCKER_WORLD_TYPE_MAX; i++) {
         if (r->worlds[i]) {
@@ -1504,6 +1536,7 @@ static void rocker_reset(DeviceState *dev)
 
 static Property rocker_properties[] = {
     DEFINE_PROP_STRING("name", Rocker, name),
+    DEFINE_PROP_STRING("world", Rocker, world_name),
     DEFINE_PROP_MACADDR("fp_start_macaddr", Rocker,
                         fp_start_macaddr),
     DEFINE_PROP_UINT64("switch_id", Rocker,

@@ -194,8 +194,8 @@ ETEXI
 
     {
         .name       = "change",
-        .args_type  = "device:B,target:F,arg:s?",
-        .params     = "device filename [format]",
+        .args_type  = "device:B,target:F,arg:s?,read-only-mode:s?",
+        .params     = "device filename [format [read-only-mode]]",
         .help       = "change a removable medium, optional format",
         .mhandler.cmd = hmp_change,
     },
@@ -206,7 +206,7 @@ STEXI
 Change the configuration of a device.
 
 @table @option
-@item change @var{diskdevice} @var{filename} [@var{format}]
+@item change @var{diskdevice} @var{filename} [@var{format} [@var{read-only-mode}]]
 Change the medium for a removable disk device to point to @var{filename}. eg
 
 @example
@@ -214,6 +214,20 @@ Change the medium for a removable disk device to point to @var{filename}. eg
 @end example
 
 @var{format} is optional.
+
+@var{read-only-mode} may be used to change the read-only status of the device.
+It accepts the following values:
+
+@table @var
+@item retain
+Retains the current status; this is the default.
+
+@item read-only
+Makes the device read-only.
+
+@item read-write
+Makes the device writable.
+@end table
 
 @item change vnc @var{display},@var{options}
 Change the configuration of the VNC server. The valid syntax for @var{display}
@@ -267,9 +281,10 @@ ETEXI
 
     {
         .name       = "trace-event",
-        .args_type  = "name:s,option:b",
-        .params     = "name on|off",
-        .help       = "changes status of a specific trace event",
+        .args_type  = "name:s,option:b,vcpu:i?",
+        .params     = "name on|off [vcpu]",
+        .help       = "changes status of a specific trace event "
+                      "(vcpu: vCPU to set, default is all)",
         .mhandler.cmd = hmp_trace_event,
         .command_completion = trace_event_completion,
     },
@@ -994,7 +1009,7 @@ ETEXI
 
     {
         .name       = "migrate_set_parameter",
-        .args_type  = "parameter:s,value:i",
+        .args_type  = "parameter:s,value:s",
         .params     = "parameter value",
         .help       = "Set the parameter for migration",
         .mhandler.cmd = hmp_migrate_set_parameter,
@@ -1005,6 +1020,23 @@ STEXI
 @item migrate_set_parameter @var{parameter} @var{value}
 @findex migrate_set_parameter
 Set the parameter @var{parameter} for migration.
+ETEXI
+
+    {
+        .name       = "migrate_start_postcopy",
+        .args_type  = "",
+        .params     = "",
+        .help       = "Followup to a migration command to switch the migration"
+                      " to postcopy mode. The postcopy-ram capability must "
+                      "be set before the original migration command.",
+        .mhandler.cmd = hmp_migrate_start_postcopy,
+    },
+
+STEXI
+@item migrate_start_postcopy
+@findex migrate_start_postcopy
+Switch in-progress migration to postcopy mode. Ignored after the end of
+migration (or once already in postcopy).
 ETEXI
 
     {
@@ -1025,10 +1057,11 @@ ETEXI
 
     {
         .name       = "dump-guest-memory",
-        .args_type  = "paging:-p,zlib:-z,lzo:-l,snappy:-s,filename:F,begin:i?,length:i?",
-        .params     = "[-p] [-z|-l|-s] filename [begin length]",
+        .args_type  = "paging:-p,detach:-d,zlib:-z,lzo:-l,snappy:-s,filename:F,begin:i?,length:i?",
+        .params     = "[-p] [-d] [-z|-l|-s] filename [begin length]",
         .help       = "dump guest memory into file 'filename'.\n\t\t\t"
                       "-p: do paging to get guest's memory mapping.\n\t\t\t"
+                      "-d: return immediately (do not wait for completion).\n\t\t\t"
                       "-z: dump in kdump-compressed format, with zlib compression.\n\t\t\t"
                       "-l: dump in kdump-compressed format, with lzo compression.\n\t\t\t"
                       "-s: dump in kdump-compressed format, with snappy compression.\n\t\t\t"
@@ -1169,8 +1202,8 @@ ETEXI
 
     {
         .name       = "drive_add",
-        .args_type  = "pci_addr:s,opts:s",
-        .params     = "[[<domain>:]<bus>:]<slot>\n"
+        .args_type  = "node:-n,pci_addr:s,opts:s",
+        .params     = "[-n] [[<domain>:]<bus>:]<slot>\n"
                       "[file=file][,if=type][,bus=n]\n"
                       "[,unit=m][,media=d][,index=i]\n"
                       "[,cyls=c,heads=h,secs=s[,trans=t]]\n"

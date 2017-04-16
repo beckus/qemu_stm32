@@ -12,15 +12,22 @@
  *
  */
 
+#include "qemu/osdep.h"
 #include "hw/timer/imx_gpt.h"
-#include "hw/misc/imx_ccm.h"
 #include "qemu/main-loop.h"
+#include "qemu/log.h"
 
-/*
- * Define to 1 for debug messages
- */
-#define DEBUG_TIMER 0
-#if DEBUG_TIMER
+#ifndef DEBUG_IMX_GPT
+#define DEBUG_IMX_GPT 0
+#endif
+
+#define DPRINTF(fmt, args...) \
+    do { \
+        if (DEBUG_IMX_GPT) { \
+            fprintf(stderr, "[%s]%s: " fmt , TYPE_IMX_GPT, \
+                                             __func__, ##args); \
+        } \
+    } while (0)
 
 static char const *imx_gpt_reg_name(uint32_t reg)
 {
@@ -50,24 +57,6 @@ static char const *imx_gpt_reg_name(uint32_t reg)
     }
 }
 
-#  define DPRINTF(fmt, args...) \
-          do { printf("%s: " fmt , __func__, ##args); } while (0)
-#else
-#  define DPRINTF(fmt, args...) do {} while (0)
-#endif
-
-/*
- * Define to 1 for messages about attempts to
- * access unimplemented registers or similar.
- */
-#define DEBUG_IMPLEMENTATION 1
-#if DEBUG_IMPLEMENTATION
-#  define IPRINTF(fmt, args...) \
-          do { fprintf(stderr, "%s: " fmt, __func__, ##args); } while (0)
-#else
-#  define IPRINTF(fmt, args...) do {} while (0)
-#endif
-
 static const VMStateDescription vmstate_imx_timer_gpt = {
     .name = TYPE_IMX_GPT,
     .version_id = 3,
@@ -91,28 +80,50 @@ static const VMStateDescription vmstate_imx_timer_gpt = {
     }
 };
 
-static const IMXClk imx_gpt_clocks[] = {
-    NOCLK,    /* 000 No clock source */
-    IPG,      /* 001 ipg_clk, 532MHz*/
-    IPG,      /* 010 ipg_clk_highfreq */
-    NOCLK,    /* 011 not defined */
-    CLK_32k,  /* 100 ipg_clk_32k */
-    NOCLK,    /* 101 not defined */
-    NOCLK,    /* 110 not defined */
-    NOCLK,    /* 111 not defined */
+static const IMXClk imx25_gpt_clocks[] = {
+    CLK_NONE,      /* 000 No clock source */
+    CLK_IPG,       /* 001 ipg_clk, 532MHz*/
+    CLK_IPG_HIGH,  /* 010 ipg_clk_highfreq */
+    CLK_NONE,      /* 011 not defined */
+    CLK_32k,       /* 100 ipg_clk_32k */
+    CLK_32k,       /* 101 ipg_clk_32k */
+    CLK_32k,       /* 110 ipg_clk_32k */
+    CLK_32k,       /* 111 ipg_clk_32k */
+};
+
+static const IMXClk imx31_gpt_clocks[] = {
+    CLK_NONE,      /* 000 No clock source */
+    CLK_IPG,       /* 001 ipg_clk, 532MHz*/
+    CLK_IPG_HIGH,  /* 010 ipg_clk_highfreq */
+    CLK_NONE,      /* 011 not defined */
+    CLK_32k,       /* 100 ipg_clk_32k */
+    CLK_NONE,      /* 101 not defined */
+    CLK_NONE,      /* 110 not defined */
+    CLK_NONE,      /* 111 not defined */
+};
+
+static const IMXClk imx6_gpt_clocks[] = {
+    CLK_NONE,      /* 000 No clock source */
+    CLK_IPG,       /* 001 ipg_clk, 532MHz*/
+    CLK_IPG_HIGH,  /* 010 ipg_clk_highfreq */
+    CLK_EXT,       /* 011 External clock */
+    CLK_32k,       /* 100 ipg_clk_32k */
+    CLK_HIGH_DIV,  /* 101 reference clock / 8 */
+    CLK_NONE,      /* 110 not defined */
+    CLK_HIGH,      /* 111 reference clock */
 };
 
 static void imx_gpt_set_freq(IMXGPTState *s)
 {
     uint32_t clksrc = extract32(s->cr, GPT_CR_CLKSRC_SHIFT, 3);
-    uint32_t freq = imx_clock_frequency(s->ccm, imx_gpt_clocks[clksrc])
-                    / (1 + s->pr);
-    s->freq = freq;
 
-    DPRINTF("Setting clksrc %d to frequency %d\n", clksrc, freq);
+    s->freq = imx_ccm_get_clock_frequency(s->ccm,
+                                          s->clocks[clksrc]) / (1 + s->pr);
 
-    if (freq) {
-        ptimer_set_freq(s->timer, freq);
+    DPRINTF("Setting clksrc %d to frequency %d\n", clksrc, s->freq);
+
+    if (s->freq) {
+        ptimer_set_freq(s->timer, s->freq);
     }
 }
 
@@ -145,7 +156,7 @@ static inline uint32_t imx_gpt_find_limit(uint32_t count, uint32_t reg,
 static void imx_gpt_compute_next_timeout(IMXGPTState *s, bool event)
 {
     uint32_t timeout = GPT_TIMER_MAX;
-    uint32_t count = 0;
+    uint32_t count;
     long long limit;
 
     if (!(s->cr & GPT_CR_EN)) {
@@ -153,20 +164,23 @@ static void imx_gpt_compute_next_timeout(IMXGPTState *s, bool event)
         return;
     }
 
+    /* update the count */
+    count = imx_gpt_update_count(s);
+
     if (event) {
-        /* This is a timer event  */
-
-        if ((s->cr & GPT_CR_FRR)  && (s->next_timeout != GPT_TIMER_MAX)) {
-            /*
-             * if we are in free running mode and we have not reached
-             * the GPT_TIMER_MAX limit, then update the count
+        /*
+         * This is an event (the ptimer reached 0 and stopped), and the
+         * timer counter is now equal to s->next_timeout.
+         */
+        if (!(s->cr & GPT_CR_FRR) && (count == s->ocr1)) {
+            /* We are in restart mode and we crossed the compare channel 1
+             * value. We need to reset the counter to 0.
              */
-            count = imx_gpt_update_count(s);
+            count = s->cnt = s->next_timeout = 0;
+        } else if (count == GPT_TIMER_MAX) {
+            /* We reached GPT_TIMER_MAX so we need to rollover */
+            count = s->cnt = s->next_timeout = 0;
         }
-    } else {
-        /* not a timer event, then just update the count */
-
-        count = imx_gpt_update_count(s);
     }
 
     /* now, find the next timeout related to count */
@@ -224,9 +238,8 @@ static uint64_t imx_gpt_read(void *opaque, hwaddr offset, unsigned size)
 {
     IMXGPTState *s = IMX_GPT(opaque);
     uint32_t reg_value = 0;
-    uint32_t reg = offset >> 2;
 
-    switch (reg) {
+    switch (offset >> 2) {
     case 0: /* Control Register */
         reg_value = s->cr;
         break;
@@ -256,12 +269,14 @@ static uint64_t imx_gpt_read(void *opaque, hwaddr offset, unsigned size)
         break;
 
     case 7: /* input Capture Register 1 */
-        qemu_log_mask(LOG_UNIMP, "icr1 feature is not implemented\n");
+        qemu_log_mask(LOG_UNIMP, "[%s]%s: icr1 feature is not implemented\n",
+                      TYPE_IMX_GPT, __func__);
         reg_value = s->icr1;
         break;
 
     case 8: /* input Capture Register 2 */
-        qemu_log_mask(LOG_UNIMP, "icr2 feature is not implemented\n");
+        qemu_log_mask(LOG_UNIMP, "[%s]%s: icr2 feature is not implemented\n",
+                      TYPE_IMX_GPT, __func__);
         reg_value = s->icr2;
         break;
 
@@ -271,11 +286,12 @@ static uint64_t imx_gpt_read(void *opaque, hwaddr offset, unsigned size)
         break;
 
     default:
-        IPRINTF("Bad offset %x\n", reg);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_GPT, __func__, offset);
         break;
     }
 
-    DPRINTF("(%s) = 0x%08x\n", imx_gpt_reg_name(reg), reg_value);
+    DPRINTF("(%s) = 0x%08x\n", imx_gpt_reg_name(offset >> 2), reg_value);
 
     return reg_value;
 }
@@ -322,12 +338,11 @@ static void imx_gpt_write(void *opaque, hwaddr offset, uint64_t value,
 {
     IMXGPTState *s = IMX_GPT(opaque);
     uint32_t oldreg;
-    uint32_t reg = offset >> 2;
 
-    DPRINTF("(%s, value = 0x%08x)\n", imx_gpt_reg_name(reg),
+    DPRINTF("(%s, value = 0x%08x)\n", imx_gpt_reg_name(offset >> 2),
             (uint32_t)value);
 
-    switch (reg) {
+    switch (offset >> 2) {
     case 0:
         oldreg = s->cr;
         s->cr = value & ~0x7c14;
@@ -403,7 +418,8 @@ static void imx_gpt_write(void *opaque, hwaddr offset, uint64_t value,
         break;
 
     default:
-        IPRINTF("Bad offset %x\n", reg);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_GPT, __func__, offset);
         break;
     }
 }
@@ -458,16 +474,52 @@ static void imx_gpt_class_init(ObjectClass *klass, void *data)
     dc->desc = "i.MX general timer";
 }
 
-static const TypeInfo imx_gpt_info = {
-    .name = TYPE_IMX_GPT,
+static void imx25_gpt_init(Object *obj)
+{
+    IMXGPTState *s = IMX_GPT(obj);
+
+    s->clocks = imx25_gpt_clocks;
+}
+
+static void imx31_gpt_init(Object *obj)
+{
+    IMXGPTState *s = IMX_GPT(obj);
+
+    s->clocks = imx31_gpt_clocks;
+}
+
+static void imx6_gpt_init(Object *obj)
+{
+    IMXGPTState *s = IMX_GPT(obj);
+
+    s->clocks = imx6_gpt_clocks;
+}
+
+static const TypeInfo imx25_gpt_info = {
+    .name = TYPE_IMX25_GPT,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(IMXGPTState),
+    .instance_init = imx25_gpt_init,
     .class_init = imx_gpt_class_init,
+};
+
+static const TypeInfo imx31_gpt_info = {
+    .name = TYPE_IMX31_GPT,
+    .parent = TYPE_IMX25_GPT,
+    .instance_init = imx31_gpt_init,
+};
+
+static const TypeInfo imx6_gpt_info = {
+    .name = TYPE_IMX6_GPT,
+    .parent = TYPE_IMX25_GPT,
+    .instance_init = imx6_gpt_init,
 };
 
 static void imx_gpt_register_types(void)
 {
-    type_register_static(&imx_gpt_info);
+    type_register_static(&imx25_gpt_info);
+    type_register_static(&imx31_gpt_info);
+    type_register_static(&imx6_gpt_info);
 }
 
 type_init(imx_gpt_register_types)

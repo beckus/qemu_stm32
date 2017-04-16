@@ -11,11 +11,9 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <glib.h>
+#include "qemu/osdep.h"
 #include <wtypes.h>
 #include <powrprof.h>
-#include <stdio.h>
-#include <string.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iptypes.h>
@@ -34,6 +32,7 @@
 #include "qapi/qmp/qerror.h"
 #include "qemu/queue.h"
 #include "qemu/host-utils.h"
+#include "qemu/base64.h"
 
 #ifndef SHTDN_REASON_FLAG_PLANNED
 #define SHTDN_REASON_FLAG_PLANNED 0x80000000
@@ -55,8 +54,11 @@ typedef struct GuestFileHandle {
 
 static struct {
     QTAILQ_HEAD(, GuestFileHandle) filehandles;
-} guest_file_state;
+} guest_file_state = {
+    .filehandles = QTAILQ_HEAD_INITIALIZER(guest_file_state.filehandles),
+};
 
+#define FILE_GENERIC_APPEND (FILE_GENERIC_WRITE & ~FILE_WRITE_DATA)
 
 typedef struct OpenFlags {
     const char *forms;
@@ -64,20 +66,20 @@ typedef struct OpenFlags {
     DWORD creation_disposition;
 } OpenFlags;
 static OpenFlags guest_file_open_modes[] = {
-    {"r",   GENERIC_READ,               OPEN_EXISTING},
-    {"rb",  GENERIC_READ,               OPEN_EXISTING},
-    {"w",   GENERIC_WRITE,              CREATE_ALWAYS},
-    {"wb",  GENERIC_WRITE,              CREATE_ALWAYS},
-    {"a",   GENERIC_WRITE,              OPEN_ALWAYS  },
-    {"r+",  GENERIC_WRITE|GENERIC_READ, OPEN_EXISTING},
-    {"rb+", GENERIC_WRITE|GENERIC_READ, OPEN_EXISTING},
-    {"r+b", GENERIC_WRITE|GENERIC_READ, OPEN_EXISTING},
-    {"w+",  GENERIC_WRITE|GENERIC_READ, CREATE_ALWAYS},
-    {"wb+", GENERIC_WRITE|GENERIC_READ, CREATE_ALWAYS},
-    {"w+b", GENERIC_WRITE|GENERIC_READ, CREATE_ALWAYS},
-    {"a+",  GENERIC_WRITE|GENERIC_READ, OPEN_ALWAYS  },
-    {"ab+", GENERIC_WRITE|GENERIC_READ, OPEN_ALWAYS  },
-    {"a+b", GENERIC_WRITE|GENERIC_READ, OPEN_ALWAYS  }
+    {"r",   GENERIC_READ,                     OPEN_EXISTING},
+    {"rb",  GENERIC_READ,                     OPEN_EXISTING},
+    {"w",   GENERIC_WRITE,                    CREATE_ALWAYS},
+    {"wb",  GENERIC_WRITE,                    CREATE_ALWAYS},
+    {"a",   FILE_GENERIC_APPEND,              OPEN_ALWAYS  },
+    {"r+",  GENERIC_WRITE|GENERIC_READ,       OPEN_EXISTING},
+    {"rb+", GENERIC_WRITE|GENERIC_READ,       OPEN_EXISTING},
+    {"r+b", GENERIC_WRITE|GENERIC_READ,       OPEN_EXISTING},
+    {"w+",  GENERIC_WRITE|GENERIC_READ,       CREATE_ALWAYS},
+    {"wb+", GENERIC_WRITE|GENERIC_READ,       CREATE_ALWAYS},
+    {"w+b", GENERIC_WRITE|GENERIC_READ,       CREATE_ALWAYS},
+    {"a+",  FILE_GENERIC_APPEND|GENERIC_READ, OPEN_ALWAYS  },
+    {"ab+", FILE_GENERIC_APPEND|GENERIC_READ, OPEN_ALWAYS  },
+    {"a+b", FILE_GENERIC_APPEND|GENERIC_READ, OPEN_ALWAYS  }
 };
 
 static OpenFlags *find_open_flag(const char *mode_str)
@@ -106,7 +108,7 @@ static int64_t guest_file_handle_add(HANDLE fh, Error **errp)
     if (handle < 0) {
         return -1;
     }
-    gfh = g_malloc0(sizeof(GuestFileHandle));
+    gfh = g_new0(GuestFileHandle, 1);
     gfh->id = handle;
     gfh->fh = fh;
     QTAILQ_INSERT_TAIL(&guest_file_state.filehandles, gfh, next);
@@ -124,6 +126,28 @@ static GuestFileHandle *guest_file_handle_find(int64_t id, Error **errp)
     }
     error_setg(errp, "handle '%" PRId64 "' has not been found", id);
     return NULL;
+}
+
+static void handle_set_nonblocking(HANDLE fh)
+{
+    DWORD file_type, pipe_state;
+    file_type = GetFileType(fh);
+    if (file_type != FILE_TYPE_PIPE) {
+        return;
+    }
+    /* If file_type == FILE_TYPE_PIPE, according to MSDN
+     * the specified file is socket or named pipe */
+    if (!GetNamedPipeHandleState(fh, &pipe_state, NULL,
+                                 NULL, NULL, NULL, 0)) {
+        return;
+    }
+    /* The fd is named pipe fd */
+    if (pipe_state & PIPE_NOWAIT) {
+        return;
+    }
+
+    pipe_state |= PIPE_NOWAIT;
+    SetNamedPipeHandleState(fh, &pipe_state, NULL, NULL);
 }
 
 int64_t qmp_guest_file_open(const char *path, bool has_mode,
@@ -156,9 +180,14 @@ int64_t qmp_guest_file_open(const char *path, bool has_mode,
         return -1;
     }
 
+    /* set fd non-blocking to avoid common use cases (like reading from a
+     * named pipe) from hanging the agent
+     */
+    handle_set_nonblocking(fh);
+
     fd = guest_file_handle_add(fh, errp);
     if (fd < 0) {
-        CloseHandle(&fh);
+        CloseHandle(fh);
         error_setg(errp, "failed to add handle to qmp handle table");
         return -1;
     }
@@ -218,9 +247,7 @@ out:
     if (token) {
         CloseHandle(token);
     }
-    if (local_err) {
-        error_propagate(errp, local_err);
-    }
+    error_propagate(errp, local_err);
 }
 
 static void execute_async(DWORD WINAPI (*func)(LPVOID), LPVOID opaque,
@@ -298,7 +325,7 @@ GuestFileRead *qmp_guest_file_read(int64_t handle, bool has_count,
         slog("guest-file-read failed, handle %" PRId64, handle);
     } else {
         buf[read_count] = 0;
-        read_data = g_malloc0(sizeof(GuestFileRead));
+        read_data = g_new0(GuestFileRead, 1);
         read_data->count = (size_t)read_count;
         read_data->eof = read_count == 0;
 
@@ -327,7 +354,10 @@ GuestFileWrite *qmp_guest_file_write(int64_t handle, const char *buf_b64,
         return NULL;
     }
     fh = gfh->fh;
-    buf = g_base64_decode(buf_b64, &buf_len);
+    buf = qbase64_decode(buf_b64, -1, &buf_len, errp);
+    if (!buf) {
+        return NULL;
+    }
 
     if (!has_count) {
         count = buf_len;
@@ -342,7 +372,7 @@ GuestFileWrite *qmp_guest_file_write(int64_t handle, const char *buf_b64,
         error_setg_win32(errp, GetLastError(), "failed to write to file");
         slog("guest-file-write-failed, handle: %" PRId64, handle);
     } else {
-        write_data = g_malloc0(sizeof(GuestFileWrite));
+        write_data = g_new0(GuestFileWrite, 1);
         write_data->count = (size_t) write_count;
     }
 
@@ -352,7 +382,8 @@ done:
 }
 
 GuestFileSeek *qmp_guest_file_seek(int64_t handle, int64_t offset,
-                                   int64_t whence, Error **errp)
+                                   GuestFileWhence *whence_code,
+                                   Error **errp)
 {
     GuestFileHandle *gfh;
     GuestFileSeek *seek_data;
@@ -360,8 +391,18 @@ GuestFileSeek *qmp_guest_file_seek(int64_t handle, int64_t offset,
     LARGE_INTEGER new_pos, off_pos;
     off_pos.QuadPart = offset;
     BOOL res;
+    int whence;
+    Error *err = NULL;
+
     gfh = guest_file_handle_find(handle, errp);
     if (!gfh) {
+        return NULL;
+    }
+
+    /* We stupidly exposed 'whence':'int' in our qapi */
+    whence = ga_parse_whence(whence_code, &err);
+    if (err) {
+        error_propagate(errp, err);
         return NULL;
     }
 
@@ -388,11 +429,6 @@ void qmp_guest_file_flush(int64_t handle, Error **errp)
     if (!FlushFileBuffers(fh)) {
         error_setg_win32(errp, GetLastError(), "failed to flush file");
     }
-}
-
-static void guest_file_init(void)
-{
-    QTAILQ_INIT(&guest_file_state.filehandles);
 }
 
 #ifdef CONFIG_QGA_NTDDSCSI
@@ -844,9 +880,7 @@ static void check_suspend_mode(GuestSuspendMode mode, Error **errp)
     }
 
 out:
-    if (local_err) {
-        error_propagate(errp, local_err);
-    }
+    error_propagate(errp, local_err);
 }
 
 static DWORD WINAPI do_suspend(LPVOID opaque)
@@ -865,7 +899,7 @@ static DWORD WINAPI do_suspend(LPVOID opaque)
 void qmp_guest_suspend_disk(Error **errp)
 {
     Error *local_err = NULL;
-    GuestSuspendMode *mode = g_malloc(sizeof(GuestSuspendMode));
+    GuestSuspendMode *mode = g_new(GuestSuspendMode, 1);
 
     *mode = GUEST_SUSPEND_MODE_DISK;
     check_suspend_mode(*mode, &local_err);
@@ -881,7 +915,7 @@ void qmp_guest_suspend_disk(Error **errp)
 void qmp_guest_suspend_ram(Error **errp)
 {
     Error *local_err = NULL;
-    GuestSuspendMode *mode = g_malloc(sizeof(GuestSuspendMode));
+    GuestSuspendMode *mode = g_new(GuestSuspendMode, 1);
 
     *mode = GUEST_SUSPEND_MODE_RAM;
     check_suspend_mode(*mode, &local_err);
@@ -1116,7 +1150,6 @@ out:
 int64_t qmp_guest_get_time(Error **errp)
 {
     SYSTEMTIME ts = {0};
-    int64_t time_ns;
     FILETIME tf;
 
     GetSystemTime(&ts);
@@ -1130,10 +1163,8 @@ int64_t qmp_guest_get_time(Error **errp)
         return -1;
     }
 
-    time_ns = ((((int64_t)tf.dwHighDateTime << 32) | tf.dwLowDateTime)
+    return ((((int64_t)tf.dwHighDateTime << 32) | tf.dwLowDateTime)
                 - W32_FT_OFFSET) * 100;
-
-    return time_ns;
 }
 
 void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
@@ -1184,7 +1215,71 @@ void qmp_guest_set_time(bool has_time, int64_t time_ns, Error **errp)
 
 GuestLogicalProcessorList *qmp_guest_get_vcpus(Error **errp)
 {
-    error_setg(errp, QERR_UNSUPPORTED);
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION pslpi, ptr;
+    DWORD length;
+    GuestLogicalProcessorList *head, **link;
+    Error *local_err = NULL;
+    int64_t current;
+
+    ptr = pslpi = NULL;
+    length = 0;
+    current = 0;
+    head = NULL;
+    link = &head;
+
+    if ((GetLogicalProcessorInformation(pslpi, &length) == FALSE) &&
+        (GetLastError() == ERROR_INSUFFICIENT_BUFFER) &&
+        (length > sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION))) {
+        ptr = pslpi = g_malloc0(length);
+        if (GetLogicalProcessorInformation(pslpi, &length) == FALSE) {
+            error_setg(&local_err, "Failed to get processor information: %d",
+                       (int)GetLastError());
+        }
+    } else {
+        error_setg(&local_err,
+                   "Failed to get processor information buffer length: %d",
+                   (int)GetLastError());
+    }
+
+    while ((local_err == NULL) && (length > 0)) {
+        if (pslpi->Relationship == RelationProcessorCore) {
+            ULONG_PTR cpu_bits = pslpi->ProcessorMask;
+
+            while (cpu_bits > 0) {
+                if (!!(cpu_bits & 1)) {
+                    GuestLogicalProcessor *vcpu;
+                    GuestLogicalProcessorList *entry;
+
+                    vcpu = g_malloc0(sizeof *vcpu);
+                    vcpu->logical_id = current++;
+                    vcpu->online = true;
+                    vcpu->has_can_offline = false;
+
+                    entry = g_malloc0(sizeof *entry);
+                    entry->value = vcpu;
+
+                    *link = entry;
+                    link = &entry->next;
+                }
+                cpu_bits >>= 1;
+            }
+        }
+        length -= sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+        pslpi++; /* next entry */
+    }
+
+    g_free(ptr);
+
+    if (local_err == NULL) {
+        if (head != NULL) {
+            return head;
+        }
+        /* there's no guest with zero VCPUs */
+        error_setg(&local_err, "Guest reported zero VCPUs");
+    }
+
+    qapi_free_GuestLogicalProcessorList(head);
+    error_propagate(errp, local_err);
     return NULL;
 }
 
@@ -1200,11 +1295,12 @@ get_net_error_message(gint error)
     HMODULE module = NULL;
     gchar *retval = NULL;
     wchar_t *msg = NULL;
-    int flags, nchars;
+    int flags;
+    size_t nchars;
 
-    flags = FORMAT_MESSAGE_ALLOCATE_BUFFER
-        |FORMAT_MESSAGE_IGNORE_INSERTS
-        |FORMAT_MESSAGE_FROM_SYSTEM;
+    flags = FORMAT_MESSAGE_ALLOCATE_BUFFER |
+        FORMAT_MESSAGE_IGNORE_INSERTS |
+        FORMAT_MESSAGE_FROM_SYSTEM;
 
     if (error >= NERR_BASE && error <= MAX_NERR) {
         module = LoadLibraryExW(L"netmsg.dll", NULL, LOAD_LIBRARY_AS_DATAFILE);
@@ -1219,8 +1315,10 @@ get_net_error_message(gint error)
     if (msg != NULL) {
         nchars = wcslen(msg);
 
-        if (nchars > 2 && msg[nchars-1] == '\n' && msg[nchars-2] == '\r') {
-            msg[nchars-2] = '\0';
+        if (nchars >= 2 &&
+            msg[nchars - 1] == L'\n' &&
+            msg[nchars - 2] == L'\r') {
+            msg[nchars - 2] = L'\0';
         }
 
         retval = g_utf16_to_utf8(msg, -1, NULL, NULL, NULL);
@@ -1243,20 +1341,31 @@ void qmp_guest_set_user_password(const char *username,
     NET_API_STATUS nas;
     char *rawpasswddata = NULL;
     size_t rawpasswdlen;
-    wchar_t *user, *wpass;
+    wchar_t *user = NULL, *wpass = NULL;
     USER_INFO_1003 pi1003 = { 0, };
+    GError *gerr = NULL;
 
     if (crypted) {
         error_setg(errp, QERR_UNSUPPORTED);
         return;
     }
 
-    rawpasswddata = (char *)g_base64_decode(password, &rawpasswdlen);
+    rawpasswddata = (char *)qbase64_decode(password, -1, &rawpasswdlen, errp);
+    if (!rawpasswddata) {
+        return;
+    }
     rawpasswddata = g_renew(char, rawpasswddata, rawpasswdlen + 1);
     rawpasswddata[rawpasswdlen] = '\0';
 
-    user = g_utf8_to_utf16(username, -1, NULL, NULL, NULL);
-    wpass = g_utf8_to_utf16(rawpasswddata, -1, NULL, NULL, NULL);
+    user = g_utf8_to_utf16(username, -1, NULL, NULL, &gerr);
+    if (!user) {
+        goto done;
+    }
+
+    wpass = g_utf8_to_utf16(rawpasswddata, -1, NULL, NULL, &gerr);
+    if (!wpass) {
+        goto done;
+    }
 
     pi1003.usri1003_password = wpass;
     nas = NetUserSetInfo(NULL, user,
@@ -1269,6 +1378,11 @@ void qmp_guest_set_user_password(const char *username,
         g_free(msg);
     }
 
+done:
+    if (gerr) {
+        error_setg(errp, QERR_QGA_COMMAND_FAILED, gerr->message);
+        g_error_free(gerr);
+    }
     g_free(user);
     g_free(wpass);
     g_free(rawpasswddata);
@@ -1298,7 +1412,7 @@ GList *ga_command_blacklist_init(GList *blacklist)
 {
     const char *list_unsupported[] = {
         "guest-suspend-hybrid",
-        "guest-get-vcpus", "guest-set-vcpus",
+        "guest-set-vcpus",
         "guest-get-memory-blocks", "guest-set-memory-blocks",
         "guest-get-memory-block-size",
         "guest-fsfreeze-freeze-list",
@@ -1330,5 +1444,4 @@ void ga_command_state_init(GAState *s, GACommandState *cs)
     if (!vss_initialized()) {
         ga_command_state_add(cs, NULL, guest_fsfreeze_cleanup);
     }
-    ga_command_state_add(cs, guest_file_init, NULL);
 }

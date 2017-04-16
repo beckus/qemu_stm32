@@ -19,10 +19,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>
  */
 
-#ifndef TPM_TPM_BACKEND_H
-#define TPM_TPM_BACKEND_H
-
-#include <glib.h>
+#ifndef TPM_BACKEND_INT_H
+#define TPM_BACKEND_INT_H
 
 typedef struct TPMBackendThread {
     GThreadPool *pool;
@@ -40,4 +38,4 @@ typedef enum TPMBackendCmd {
     TPM_BACKEND_CMD_TPM_RESET,
 } TPMBackendCmd;
 
-#endif /* TPM_TPM_BACKEND_H */
+#endif /* TPM_BACKEND_INT_H */

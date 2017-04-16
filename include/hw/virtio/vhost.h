@@ -14,11 +14,12 @@ struct vhost_virtqueue {
     void *avail;
     void *used;
     int num;
+    unsigned long long desc_phys;
+    unsigned desc_size;
+    unsigned long long avail_phys;
+    unsigned avail_size;
     unsigned long long used_phys;
     unsigned used_size;
-    void *ring;
-    unsigned long long ring_phys;
-    unsigned ring_size;
     EventNotifier masked_notifier;
 };
 
@@ -31,7 +32,8 @@ typedef unsigned long vhost_log_chunk_t;
 struct vhost_log {
     unsigned long long size;
     int refcnt;
-    vhost_log_chunk_t log[0];
+    int fd;
+    vhost_log_chunk_t *log;
 };
 
 struct vhost_memory;
@@ -44,14 +46,14 @@ struct vhost_dev {
     int nvqs;
     /* the first virtqueue which would be used by this vhost dev */
     int vq_index;
-    unsigned long long features;
-    unsigned long long acked_features;
-    unsigned long long backend_features;
-    unsigned long long protocol_features;
-    unsigned long long max_queues;
+    uint64_t features;
+    uint64_t acked_features;
+    uint64_t backend_features;
+    uint64_t protocol_features;
+    uint64_t max_queues;
     bool started;
     bool log_enabled;
-    unsigned long long log_size;
+    uint64_t log_size;
     Error *migration_blocker;
     bool memory_changed;
     hwaddr mem_changed_start_addr;
@@ -59,12 +61,13 @@ struct vhost_dev {
     const VhostOps *vhost_ops;
     void *opaque;
     struct vhost_log *log;
+    QLIST_ENTRY(vhost_dev) entry;
 };
 
 int vhost_dev_init(struct vhost_dev *hdev, void *opaque,
-                   VhostBackendType backend_type);
+                   VhostBackendType backend_type,
+                   uint32_t busyloop_timeout);
 void vhost_dev_cleanup(struct vhost_dev *hdev);
-bool vhost_dev_query(struct vhost_dev *hdev, VirtIODevice *vdev);
 int vhost_dev_start(struct vhost_dev *hdev, VirtIODevice *vdev);
 void vhost_dev_stop(struct vhost_dev *hdev, VirtIODevice *vdev);
 int vhost_dev_enable_notifiers(struct vhost_dev *hdev, VirtIODevice *vdev);
@@ -83,4 +86,9 @@ uint64_t vhost_get_features(struct vhost_dev *hdev, const int *feature_bits,
                             uint64_t features);
 void vhost_ack_features(struct vhost_dev *hdev, const int *feature_bits,
                         uint64_t features);
+bool vhost_has_free_slot(void);
+
+int vhost_net_set_backend(struct vhost_dev *hdev,
+                          struct vhost_vring_file *file);
+
 #endif

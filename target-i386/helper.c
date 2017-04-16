@@ -17,7 +17,9 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/exec-all.h"
 #include "sysemu/kvm.h"
 #include "kvm_i386.h"
 #ifndef CONFIG_USER_ONLY
@@ -535,10 +537,10 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, fprintf_function cpu_fprintf,
         for(i=0;i<nb;i++) {
             cpu_fprintf(f, "XMM%02d=%08x%08x%08x%08x",
                         i,
-                        env->xmm_regs[i].XMM_L(3),
-                        env->xmm_regs[i].XMM_L(2),
-                        env->xmm_regs[i].XMM_L(1),
-                        env->xmm_regs[i].XMM_L(0));
+                        env->xmm_regs[i].ZMM_L(3),
+                        env->xmm_regs[i].ZMM_L(2),
+                        env->xmm_regs[i].ZMM_L(1),
+                        env->xmm_regs[i].ZMM_L(0));
             if ((i & 1) == 1)
                 cpu_fprintf(f, "\n");
             else
@@ -646,6 +648,7 @@ void cpu_x86_update_cr3(CPUX86State *env, target_ulong new_cr3)
 void cpu_x86_update_cr4(CPUX86State *env, uint32_t new_cr4)
 {
     X86CPU *cpu = x86_env_get_cpu(env);
+    uint32_t hflags;
 
 #if defined(DEBUG_MMU)
     printf("CR4 update: CR4=%08x\n", (uint32_t)env->cr[4]);
@@ -655,24 +658,33 @@ void cpu_x86_update_cr4(CPUX86State *env, uint32_t new_cr4)
          CR4_SMEP_MASK | CR4_SMAP_MASK)) {
         tlb_flush(CPU(cpu), 1);
     }
+
+    /* Clear bits we're going to recompute.  */
+    hflags = env->hflags & ~(HF_OSFXSR_MASK | HF_SMAP_MASK);
+
     /* SSE handling */
     if (!(env->features[FEAT_1_EDX] & CPUID_SSE)) {
         new_cr4 &= ~CR4_OSFXSR_MASK;
     }
-    env->hflags &= ~HF_OSFXSR_MASK;
     if (new_cr4 & CR4_OSFXSR_MASK) {
-        env->hflags |= HF_OSFXSR_MASK;
+        hflags |= HF_OSFXSR_MASK;
     }
 
     if (!(env->features[FEAT_7_0_EBX] & CPUID_7_0_EBX_SMAP)) {
         new_cr4 &= ~CR4_SMAP_MASK;
     }
-    env->hflags &= ~HF_SMAP_MASK;
     if (new_cr4 & CR4_SMAP_MASK) {
-        env->hflags |= HF_SMAP_MASK;
+        hflags |= HF_SMAP_MASK;
+    }
+
+    if (!(env->features[FEAT_7_0_ECX] & CPUID_7_0_ECX_PKU)) {
+        new_cr4 &= ~CR4_PKE_MASK;
     }
 
     env->cr[4] = new_cr4;
+    env->hflags = hflags;
+
+    cpu_sync_bndcs_hflags(env);
 }
 
 #if defined(CONFIG_USER_ONLY)
@@ -689,6 +701,8 @@ int x86_cpu_handle_mmu_fault(CPUState *cs, vaddr addr,
     env->error_code = (is_write << PG_ERROR_W_BIT);
     env->error_code |= PG_ERROR_U_MASK;
     cs->exception_index = EXCP0E_PAGE;
+    env->exception_is_int = 0;
+    env->exception_next_eip = -1;
     return 1;
 }
 
@@ -860,7 +874,7 @@ int x86_cpu_handle_mmu_fault(CPUState *cs, vaddr addr,
             /* Bits 20-13 provide bits 39-32 of the address, bit 21 is reserved.
              * Leave bits 20-13 in place for setting accessed/dirty bits below.
              */
-            pte = pde | ((pde & 0x1fe000) << (32 - 13));
+            pte = pde | ((pde & 0x1fe000LL) << (32 - 13));
             rsvd_mask = 0x200000;
             goto do_check_protect_pse36;
         }
@@ -890,38 +904,50 @@ do_check_protect_pse36:
         goto do_fault_rsvd;
     }
     ptep ^= PG_NX_MASK;
-    if ((ptep & PG_NX_MASK) && is_write1 == 2) {
+
+    /* can the page can be put in the TLB?  prot will tell us */
+    if (is_user && !(ptep & PG_USER_MASK)) {
         goto do_fault_protect;
     }
-    switch (mmu_idx) {
-    case MMU_USER_IDX:
-        if (!(ptep & PG_USER_MASK)) {
-            goto do_fault_protect;
-        }
-        if (is_write && !(ptep & PG_RW_MASK)) {
-            goto do_fault_protect;
-        }
-        break;
 
-    case MMU_KSMAP_IDX:
-        if (is_write1 != 2 && (ptep & PG_USER_MASK)) {
-            goto do_fault_protect;
+    prot = 0;
+    if (mmu_idx != MMU_KSMAP_IDX || !(ptep & PG_USER_MASK)) {
+        prot |= PAGE_READ;
+        if ((ptep & PG_RW_MASK) || (!is_user && !(env->cr[0] & CR0_WP_MASK))) {
+            prot |= PAGE_WRITE;
         }
-        /* fall through */
-    case MMU_KNOSMAP_IDX:
-        if (is_write1 == 2 && (env->cr[4] & CR4_SMEP_MASK) &&
-            (ptep & PG_USER_MASK)) {
-            goto do_fault_protect;
-        }
-        if ((env->cr[0] & CR0_WP_MASK) &&
-            is_write && !(ptep & PG_RW_MASK)) {
-            goto do_fault_protect;
-        }
-        break;
-
-    default: /* cannot happen */
-        break;
     }
+    if (!(ptep & PG_NX_MASK) &&
+        (mmu_idx == MMU_USER_IDX ||
+         !((env->cr[4] & CR4_SMEP_MASK) && (ptep & PG_USER_MASK)))) {
+        prot |= PAGE_EXEC;
+    }
+    if ((env->cr[4] & CR4_PKE_MASK) && (env->hflags & HF_LMA_MASK) &&
+        (ptep & PG_USER_MASK) && env->pkru) {
+        uint32_t pk = (pte & PG_PKRU_MASK) >> PG_PKRU_BIT;
+        uint32_t pkru_ad = (env->pkru >> pk * 2) & 1;
+        uint32_t pkru_wd = (env->pkru >> pk * 2) & 2;
+        uint32_t pkru_prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+
+        if (pkru_ad) {
+            pkru_prot &= ~(PAGE_READ | PAGE_WRITE);
+        } else if (pkru_wd && (is_user || env->cr[0] & CR0_WP_MASK)) {
+            pkru_prot &= ~PAGE_WRITE;
+        }
+
+        prot &= pkru_prot;
+        if ((pkru_prot & (1 << is_write1)) == 0) {
+            assert(is_write1 != 2);
+            error_code |= PG_ERROR_PK_MASK;
+            goto do_fault_protect;
+        }
+    }
+
+    if ((prot & (1 << is_write1)) == 0) {
+        goto do_fault_protect;
+    }
+
+    /* yes, it can! */
     is_dirty = is_write && !(pte & PG_DIRTY_MASK);
     if (!(pte & PG_ACCESSED_MASK) || is_dirty) {
         pte |= PG_ACCESSED_MASK;
@@ -931,25 +957,13 @@ do_check_protect_pse36:
         x86_stl_phys_notdirty(cs, pte_addr, pte);
     }
 
-    /* the page can be put in the TLB */
-    prot = PAGE_READ;
-    if (!(ptep & PG_NX_MASK) &&
-        (mmu_idx == MMU_USER_IDX ||
-         !((env->cr[4] & CR4_SMEP_MASK) && (ptep & PG_USER_MASK)))) {
-        prot |= PAGE_EXEC;
-    }
-    if (pte & PG_DIRTY_MASK) {
+    if (!(pte & PG_DIRTY_MASK)) {
         /* only set write access if already dirty... otherwise wait
            for dirty access */
-        if (is_user) {
-            if (ptep & PG_RW_MASK)
-                prot |= PAGE_WRITE;
-        } else {
-            if (!(env->cr[0] & CR0_WP_MASK) ||
-                (ptep & PG_RW_MASK))
-                prot |= PAGE_WRITE;
-        }
+        assert(!is_write);
+        prot &= ~PAGE_WRITE;
     }
+
  do_mapping:
     pte = pte & env->a20_mask;
 
@@ -962,6 +976,7 @@ do_check_protect_pse36:
     page_offset = vaddr & (page_size - 1);
     paddr = pte + page_offset;
 
+    assert(prot & (1 << is_write1));
     tlb_set_page_with_attrs(cs, vaddr, paddr, cpu_get_mem_attrs(env),
                             prot, mmu_idx, page_size);
     return 0;
@@ -1074,7 +1089,7 @@ hwaddr x86_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
         if (!(pde & PG_PRESENT_MASK))
             return -1;
         if ((pde & PG_PSE_MASK) && (env->cr[4] & CR4_PSE_MASK)) {
-            pte = pde | ((pde & 0x1fe000) << (32 - 13));
+            pte = pde | ((pde & 0x1fe000LL) << (32 - 13));
             page_size = 4096 * 1024;
         } else {
             /* page directory entry */

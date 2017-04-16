@@ -1,7 +1,14 @@
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h"
+#include "exec/exec-all.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
 #include "sysemu/kvm.h"
 #include "helper_regs.h"
+#include "mmu-hash64.h"
+#include "migration/cpu.h"
+#include "exec/exec-all.h"
 
 static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
 {
@@ -90,8 +97,11 @@ static int cpu_load_old(QEMUFile *f, void *opaque, int version_id)
     qemu_get_betls(f, &env->nip);
     qemu_get_betls(f, &env->hflags);
     qemu_get_betls(f, &env->hflags_nmsr);
-    qemu_get_sbe32s(f, &env->mmu_idx);
+    qemu_get_sbe32(f); /* Discard unused mmu_idx */
     qemu_get_sbe32(f); /* Discard unused power_mode */
+
+    /* Recompute mmu indices */
+    hreg_compute_mem_idx(env);
 
     return 0;
 }
@@ -131,10 +141,25 @@ static void cpu_pre_save(void *opaque)
     PowerPCCPU *cpu = opaque;
     CPUPPCState *env = &cpu->env;
     int i;
+    uint64_t insns_compat_mask =
+        PPC_INSNS_BASE | PPC_ISEL | PPC_STRING | PPC_MFTB
+        | PPC_FLOAT | PPC_FLOAT_FSEL | PPC_FLOAT_FRES
+        | PPC_FLOAT_FSQRT | PPC_FLOAT_FRSQRTE | PPC_FLOAT_FRSQRTES
+        | PPC_FLOAT_STFIWX | PPC_FLOAT_EXT
+        | PPC_CACHE | PPC_CACHE_ICBI | PPC_CACHE_DCBZ
+        | PPC_MEM_SYNC | PPC_MEM_EIEIO | PPC_MEM_TLBIE | PPC_MEM_TLBSYNC
+        | PPC_64B | PPC_64BX | PPC_ALTIVEC
+        | PPC_SEGMENT_64B | PPC_SLBI | PPC_POPCNTB | PPC_POPCNTWD;
+    uint64_t insns_compat_mask2 = PPC2_VSX | PPC2_VSX207 | PPC2_DFP | PPC2_DBRX
+        | PPC2_PERM_ISA206 | PPC2_DIVE_ISA206
+        | PPC2_ATOMIC_ISA206 | PPC2_FP_CVT_ISA206
+        | PPC2_FP_TST_ISA206 | PPC2_BCTAR_ISA207
+        | PPC2_LSQ_ISA207 | PPC2_ALTIVEC_207
+        | PPC2_ISA205 | PPC2_ISA207S | PPC2_FP_CVT_S64 | PPC2_TM;
 
     env->spr[SPR_LR] = env->lr;
     env->spr[SPR_CTR] = env->ctr;
-    env->spr[SPR_XER] = env->xer;
+    env->spr[SPR_XER] = cpu_read_xer(env);
 #if defined(TARGET_PPC64)
     env->spr[SPR_CFAR] = env->cfar;
 #endif
@@ -152,6 +177,12 @@ static void cpu_pre_save(void *opaque)
         env->spr[SPR_IBAT4U + 2*i] = env->IBAT[0][i+4];
         env->spr[SPR_IBAT4U + 2*i + 1] = env->IBAT[1][i+4];
     }
+
+    /* Hacks for migration compatibility between 2.6, 2.7 & 2.8 */
+    cpu->mig_msr_mask = env->msr_mask;
+    cpu->mig_insns_flags = env->insns_flags & insns_compat_mask;
+    cpu->mig_insns_flags2 = env->insns_flags2 & insns_compat_mask2;
+    cpu->mig_nb_BATs = env->nb_BATs;
 }
 
 static int cpu_post_load(void *opaque, int version_id)
@@ -168,7 +199,7 @@ static int cpu_post_load(void *opaque, int version_id)
     env->spr[SPR_PVR] = env->spr_cb[SPR_PVR].default_value;
     env->lr = env->spr[SPR_LR];
     env->ctr = env->spr[SPR_CTR];
-    env->xer = env->spr[SPR_XER];
+    cpu_write_xer(env, env->spr[SPR_XER]);
 #if defined(TARGET_PPC64)
     env->cfar = env->spr[SPR_CFAR];
 #endif
@@ -352,11 +383,30 @@ static bool slb_needed(void *opaque)
     return (cpu->env.mmu_model & POWERPC_MMU_64);
 }
 
+static int slb_post_load(void *opaque, int version_id)
+{
+    PowerPCCPU *cpu = opaque;
+    CPUPPCState *env = &cpu->env;
+    int i;
+
+    /* We've pulled in the raw esid and vsid values from the migration
+     * stream, but we need to recompute the page size pointers */
+    for (i = 0; i < env->slb_nr; i++) {
+        if (ppc_store_slb(cpu, i, env->slb[i].esid, env->slb[i].vsid) < 0) {
+            /* Migration source had bad values in its SLB */
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static const VMStateDescription vmstate_slb = {
     .name = "cpu/slb",
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = slb_needed,
+    .post_load = slb_post_load,
     .fields = (VMStateField[]) {
         VMSTATE_INT32_EQUAL(env.slb_nr, PowerPCCPU),
         VMSTATE_SLB_ARRAY(env.slb, PowerPCCPU, MAX_SLB_ENTRIES),
@@ -533,10 +583,10 @@ const VMStateDescription vmstate_ppc_cpu = {
         /* FIXME: access_type? */
 
         /* Sanity checking */
-        VMSTATE_UINTTL_EQUAL(env.msr_mask, PowerPCCPU),
-        VMSTATE_UINT64_EQUAL(env.insns_flags, PowerPCCPU),
-        VMSTATE_UINT64_EQUAL(env.insns_flags2, PowerPCCPU),
-        VMSTATE_UINT32_EQUAL(env.nb_BATs, PowerPCCPU),
+        VMSTATE_UINTTL(mig_msr_mask, PowerPCCPU),
+        VMSTATE_UINT64(mig_insns_flags, PowerPCCPU),
+        VMSTATE_UINT64(mig_insns_flags2, PowerPCCPU),
+        VMSTATE_UINT32(mig_nb_BATs, PowerPCCPU),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription*[]) {

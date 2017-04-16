@@ -7,8 +7,10 @@
  * This code is licensed under the GPL.
  */
 
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "exec/address-spaces.h"
+#include "qemu/log.h"
 
 #define PL080_MAX_CHANNELS 8
 #define PL080_CONF_E    0x1

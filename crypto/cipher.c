@@ -18,36 +18,119 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "crypto/cipher.h"
 
 
-static size_t alg_key_len[QCRYPTO_CIPHER_ALG_LAST] = {
+static size_t alg_key_len[QCRYPTO_CIPHER_ALG__MAX] = {
     [QCRYPTO_CIPHER_ALG_AES_128] = 16,
     [QCRYPTO_CIPHER_ALG_AES_192] = 24,
     [QCRYPTO_CIPHER_ALG_AES_256] = 32,
     [QCRYPTO_CIPHER_ALG_DES_RFB] = 8,
+    [QCRYPTO_CIPHER_ALG_CAST5_128] = 16,
+    [QCRYPTO_CIPHER_ALG_SERPENT_128] = 16,
+    [QCRYPTO_CIPHER_ALG_SERPENT_192] = 24,
+    [QCRYPTO_CIPHER_ALG_SERPENT_256] = 32,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_128] = 16,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_192] = 24,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_256] = 32,
 };
+
+static size_t alg_block_len[QCRYPTO_CIPHER_ALG__MAX] = {
+    [QCRYPTO_CIPHER_ALG_AES_128] = 16,
+    [QCRYPTO_CIPHER_ALG_AES_192] = 16,
+    [QCRYPTO_CIPHER_ALG_AES_256] = 16,
+    [QCRYPTO_CIPHER_ALG_DES_RFB] = 8,
+    [QCRYPTO_CIPHER_ALG_CAST5_128] = 8,
+    [QCRYPTO_CIPHER_ALG_SERPENT_128] = 16,
+    [QCRYPTO_CIPHER_ALG_SERPENT_192] = 16,
+    [QCRYPTO_CIPHER_ALG_SERPENT_256] = 16,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_128] = 16,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_192] = 16,
+    [QCRYPTO_CIPHER_ALG_TWOFISH_256] = 16,
+};
+
+static bool mode_need_iv[QCRYPTO_CIPHER_MODE__MAX] = {
+    [QCRYPTO_CIPHER_MODE_ECB] = false,
+    [QCRYPTO_CIPHER_MODE_CBC] = true,
+    [QCRYPTO_CIPHER_MODE_XTS] = true,
+};
+
+
+size_t qcrypto_cipher_get_block_len(QCryptoCipherAlgorithm alg)
+{
+    if (alg >= G_N_ELEMENTS(alg_key_len)) {
+        return 0;
+    }
+    return alg_block_len[alg];
+}
+
+
+size_t qcrypto_cipher_get_key_len(QCryptoCipherAlgorithm alg)
+{
+    if (alg >= G_N_ELEMENTS(alg_key_len)) {
+        return 0;
+    }
+    return alg_key_len[alg];
+}
+
+
+size_t qcrypto_cipher_get_iv_len(QCryptoCipherAlgorithm alg,
+                                 QCryptoCipherMode mode)
+{
+    if (alg >= G_N_ELEMENTS(alg_block_len)) {
+        return 0;
+    }
+    if (mode >= G_N_ELEMENTS(mode_need_iv)) {
+        return 0;
+    }
+
+    if (mode_need_iv[mode]) {
+        return alg_block_len[alg];
+    }
+    return 0;
+}
+
 
 static bool
 qcrypto_cipher_validate_key_length(QCryptoCipherAlgorithm alg,
+                                   QCryptoCipherMode mode,
                                    size_t nkey,
                                    Error **errp)
 {
-    if ((unsigned)alg >= QCRYPTO_CIPHER_ALG_LAST) {
+    if ((unsigned)alg >= QCRYPTO_CIPHER_ALG__MAX) {
         error_setg(errp, "Cipher algorithm %d out of range",
                    alg);
         return false;
     }
 
-    if (alg_key_len[alg] != nkey) {
-        error_setg(errp, "Cipher key length %zu should be %zu",
-                   alg_key_len[alg], nkey);
-        return false;
+    if (mode == QCRYPTO_CIPHER_MODE_XTS) {
+        if (alg == QCRYPTO_CIPHER_ALG_DES_RFB) {
+            error_setg(errp, "XTS mode not compatible with DES-RFB");
+            return false;
+        }
+        if (nkey % 2) {
+            error_setg(errp, "XTS cipher key length should be a multiple of 2");
+            return false;
+        }
+
+        if (alg_key_len[alg] != (nkey / 2)) {
+            error_setg(errp, "Cipher key length %zu should be %zu",
+                       nkey, alg_key_len[alg] * 2);
+            return false;
+        }
+    } else {
+        if (alg_key_len[alg] != nkey) {
+            error_setg(errp, "Cipher key length %zu should be %zu",
+                       nkey, alg_key_len[alg]);
+            return false;
+        }
     }
     return true;
 }
 
-#if defined(CONFIG_GNUTLS_GCRYPT) || defined(CONFIG_GNUTLS_NETTLE)
+#if defined(CONFIG_GCRYPT) || defined(CONFIG_NETTLE)
 static uint8_t *
 qcrypto_cipher_munge_des_rfb_key(const uint8_t *key,
                                  size_t nkey)
@@ -63,11 +146,11 @@ qcrypto_cipher_munge_des_rfb_key(const uint8_t *key,
     }
     return ret;
 }
-#endif /* CONFIG_GNUTLS_GCRYPT || CONFIG_GNUTLS_NETTLE */
+#endif /* CONFIG_GCRYPT || CONFIG_NETTLE */
 
-#ifdef CONFIG_GNUTLS_GCRYPT
+#ifdef CONFIG_GCRYPT
 #include "crypto/cipher-gcrypt.c"
-#elif defined CONFIG_GNUTLS_NETTLE
+#elif defined CONFIG_NETTLE
 #include "crypto/cipher-nettle.c"
 #else
 #include "crypto/cipher-builtin.c"

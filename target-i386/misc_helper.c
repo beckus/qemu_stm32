@@ -17,8 +17,10 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
+#include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/address-spaces.h"
 
@@ -360,6 +362,12 @@ void helper_wrmsr(CPUX86State *env)
     case MSR_IA32_MISC_ENABLE:
         env->msr_ia32_misc_enable = val;
         break;
+    case MSR_IA32_BNDCFGS:
+        /* FIXME: #GP if reserved bits are set.  */
+        /* FIXME: Extend highest implemented bit of linear address.  */
+        env->msr_bndcfgs = val;
+        cpu_sync_bndcs_hflags(env);
+        break;
     default:
         if ((uint32_t)env->regs[R_ECX] >= MSR_MC0_CTL
             && (uint32_t)env->regs[R_ECX] < MSR_MC0_CTL +
@@ -505,6 +513,9 @@ void helper_rdmsr(CPUX86State *env)
     case MSR_IA32_MISC_ENABLE:
         val = env->msr_ia32_misc_enable;
         break;
+    case MSR_IA32_BNDCFGS:
+        val = env->msr_bndcfgs;
+        break;
     default:
         if ((uint32_t)env->regs[R_ECX] >= MSR_MC0_CTL
             && (uint32_t)env->regs[R_ECX] < MSR_MC0_CTL +
@@ -598,4 +609,31 @@ void helper_debug(CPUX86State *env)
 
     cs->exception_index = EXCP_DEBUG;
     cpu_loop_exit(cs);
+}
+
+uint64_t helper_rdpkru(CPUX86State *env, uint32_t ecx)
+{
+    if ((env->cr[4] & CR4_PKE_MASK) == 0) {
+        raise_exception_err_ra(env, EXCP06_ILLOP, 0, GETPC());
+    }
+    if (ecx != 0) {
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, GETPC());
+    }
+
+    return env->pkru;
+}
+
+void helper_wrpkru(CPUX86State *env, uint32_t ecx, uint64_t val)
+{
+    CPUState *cs = CPU(x86_env_get_cpu(env));
+
+    if ((env->cr[4] & CR4_PKE_MASK) == 0) {
+        raise_exception_err_ra(env, EXCP06_ILLOP, 0, GETPC());
+    }
+    if (ecx != 0 || (val & 0xFFFFFFFF00000000ull)) {
+        raise_exception_err_ra(env, EXCP0D_GPF, 0, GETPC());
+    }
+
+    env->pkru = val;
+    tlb_flush(cs, 1);
 }

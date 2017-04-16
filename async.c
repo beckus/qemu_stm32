@@ -22,11 +22,14 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "block/aio.h"
 #include "block/thread-pool.h"
 #include "qemu/main-loop.h"
 #include "qemu/atomic.h"
+#include "block/raw-aio.h"
 
 /***********************************************************/
 /* bottom halves (can be seen as timers which expire ASAP) */
@@ -59,6 +62,11 @@ QEMUBH *aio_bh_new(AioContext *ctx, QEMUBHFunc *cb, void *opaque)
     return bh;
 }
 
+void aio_bh_call(QEMUBH *bh)
+{
+    bh->cb(bh->opaque);
+}
+
 /* Multiple occurrences of aio_bh_poll cannot be called concurrently */
 int aio_bh_poll(AioContext *ctx)
 {
@@ -84,7 +92,7 @@ int aio_bh_poll(AioContext *ctx)
                 ret = 1;
             }
             bh->idle = 0;
-            bh->cb(bh->opaque);
+            aio_bh_call(bh);
         }
     }
 
@@ -210,7 +218,7 @@ aio_ctx_check(GSource *source)
     for (bh = ctx->first_bh; bh; bh = bh->next) {
         if (!bh->deleted && bh->scheduled) {
             return true;
-	}
+        }
     }
     return aio_pending(ctx) || (timerlistgroup_deadline_ns(&ctx->tlg) == 0);
 }
@@ -235,6 +243,14 @@ aio_ctx_finalize(GSource     *source)
     qemu_bh_delete(ctx->notify_dummy_bh);
     thread_pool_free(ctx->thread_pool);
 
+#ifdef CONFIG_LINUX_AIO
+    if (ctx->linux_aio) {
+        laio_detach_aio_context(ctx->linux_aio, ctx);
+        laio_cleanup(ctx->linux_aio);
+        ctx->linux_aio = NULL;
+    }
+#endif
+
     qemu_mutex_lock(&ctx->bh_lock);
     while (ctx->first_bh) {
         QEMUBH *next = ctx->first_bh->next;
@@ -247,7 +263,7 @@ aio_ctx_finalize(GSource     *source)
     }
     qemu_mutex_unlock(&ctx->bh_lock);
 
-    aio_set_event_notifier(ctx, &ctx->notifier, NULL);
+    aio_set_event_notifier(ctx, &ctx->notifier, false, NULL);
     event_notifier_cleanup(&ctx->notifier);
     rfifolock_destroy(&ctx->lock);
     qemu_mutex_destroy(&ctx->bh_lock);
@@ -274,6 +290,17 @@ ThreadPool *aio_get_thread_pool(AioContext *ctx)
     }
     return ctx->thread_pool;
 }
+
+#ifdef CONFIG_LINUX_AIO
+LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+{
+    if (!ctx->linux_aio) {
+        ctx->linux_aio = laio_init();
+        laio_attach_aio_context(ctx->linux_aio, ctx);
+    }
+    return ctx->linux_aio;
+}
+#endif
 
 void aio_notify(AioContext *ctx)
 {
@@ -320,17 +347,23 @@ AioContext *aio_context_new(Error **errp)
 {
     int ret;
     AioContext *ctx;
+
     ctx = (AioContext *) g_source_new(&aio_source_funcs, sizeof(AioContext));
+    aio_context_setup(ctx);
+
     ret = event_notifier_init(&ctx->notifier, false);
     if (ret < 0) {
-        g_source_destroy(&ctx->source);
         error_setg_errno(errp, -ret, "Failed to initialize event notifier");
-        return NULL;
+        goto fail;
     }
     g_source_set_can_recurse(&ctx->source, true);
     aio_set_event_notifier(ctx, &ctx->notifier,
+                           false,
                            (EventNotifierHandler *)
                            event_notifier_dummy_cb);
+#ifdef CONFIG_LINUX_AIO
+    ctx->linux_aio = NULL;
+#endif
     ctx->thread_pool = NULL;
     qemu_mutex_init(&ctx->bh_lock);
     rfifolock_init(&ctx->lock, aio_rfifolock_cb, ctx);
@@ -339,6 +372,9 @@ AioContext *aio_context_new(Error **errp)
     ctx->notify_dummy_bh = aio_bh_new(ctx, notify_dummy_bh, NULL);
 
     return ctx;
+fail:
+    g_source_destroy(&ctx->source);
+    return NULL;
 }
 
 void aio_context_ref(AioContext *ctx)

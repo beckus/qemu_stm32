@@ -18,21 +18,42 @@
  * Create an error:
  *     error_setg(&err, "situation normal, all fouled up");
  *
- * Report an error to stderr:
+ * Create an error and add additional explanation:
+ *     error_setg(&err, "invalid quark");
+ *     error_append_hint(&err, "Valid quarks are up, down, strange, "
+ *                       "charm, top, bottom.\n");
+ *
+ * Do *not* contract this to
+ *     error_setg(&err, "invalid quark\n"
+ *                "Valid quarks are up, down, strange, charm, top, bottom.");
+ *
+ * Report an error to the current monitor if we have one, else stderr:
  *     error_report_err(err);
  * This frees the error object.
+ *
+ * Likewise, but with additional text prepended:
+ *     error_reportf_err(err, "Could not frobnicate '%s': ", name);
  *
  * Report an error somewhere else:
  *     const char *msg = error_get_pretty(err);
  *     do with msg what needs to be done...
  *     error_free(err);
+ * Note that this loses hints added with error_append_hint().
  *
  * Handle an error without reporting it (just for completeness):
  *     error_free(err);
  *
+ * Assert that an expected error occurred, but clean it up without
+ * reporting it (primarily useful in testsuites):
+ *     error_free_or_abort(&err);
+ *
  * Pass an existing error to the caller:
  *     error_propagate(errp, err);
  * where Error **errp is a parameter, by convention the last one.
+ *
+ * Pass an existing error to the caller with the message modified:
+ *     error_propagate(errp, err);
+ *     error_prepend(errp, "Could not frobnicate '%s': ", name);
  *
  * Create a new error and pass it to the caller:
  *     error_setg(errp, "situation normal, all fouled up");
@@ -72,24 +93,48 @@
  * But when all you do with the error is pass it on, please use
  *     foo(arg, errp);
  * for readability.
+ *
+ * Receive and accumulate multiple errors (first one wins):
+ *     Error *err = NULL, *local_err = NULL;
+ *     foo(arg, &err);
+ *     bar(arg, &local_err);
+ *     error_propagate(&err, local_err);
+ *     if (err) {
+ *         handle the error...
+ *     }
+ *
+ * Do *not* "optimize" this to
+ *     foo(arg, &err);
+ *     bar(arg, &err); // WRONG!
+ *     if (err) {
+ *         handle the error...
+ *     }
+ * because this may pass a non-null err to bar().
  */
 
 #ifndef ERROR_H
 #define ERROR_H
 
-#include "qemu/compiler.h"
 #include "qapi-types.h"
-#include <stdbool.h>
 
 /*
- * Opaque error object.
+ * Overall category of an error.
+ * Based on the qapi type QapiErrorClass, but reproduced here for nicer
+ * enum names.
  */
-typedef struct Error Error;
+typedef enum ErrorClass {
+    ERROR_CLASS_GENERIC_ERROR = QAPI_ERROR_CLASS_GENERICERROR,
+    ERROR_CLASS_COMMAND_NOT_FOUND = QAPI_ERROR_CLASS_COMMANDNOTFOUND,
+    ERROR_CLASS_DEVICE_ENCRYPTED = QAPI_ERROR_CLASS_DEVICEENCRYPTED,
+    ERROR_CLASS_DEVICE_NOT_ACTIVE = QAPI_ERROR_CLASS_DEVICENOTACTIVE,
+    ERROR_CLASS_DEVICE_NOT_FOUND = QAPI_ERROR_CLASS_DEVICENOTFOUND,
+    ERROR_CLASS_KVM_MISSING_CAP = QAPI_ERROR_CLASS_KVMMISSINGCAP,
+} ErrorClass;
 
 /*
  * Get @err's human-readable error message.
  */
-const char *error_get_pretty(Error *err);
+const char *error_get_pretty(const Error *err);
 
 /*
  * Get @err's error class.
@@ -107,6 +152,11 @@ ErrorClass error_get_class(const Error *err);
  * If @errp is anything else, *@errp must be NULL.
  * The new error's class is ERROR_CLASS_GENERIC_ERROR, and its
  * human-readable error message is made from printf-style @fmt, ...
+ * The resulting message should be a single phrase, with no newline or
+ * trailing punctuation.
+ * Please don't error_setg(&error_fatal, ...), use error_report() and
+ * exit(), because that's more obvious.
+ * Likewise, don't error_setg(&error_abort, ...), use assert().
  */
 #define error_setg(errp, fmt, ...)                              \
     error_setg_internal((errp), __FILE__, __LINE__, __func__,   \
@@ -158,12 +208,31 @@ void error_setg_win32_internal(Error **errp,
  * the error object.
  * Else, move the error object from @local_err to *@dst_errp.
  * On return, @local_err is invalid.
+ * Please don't error_propagate(&error_fatal, ...), use
+ * error_report_err() and exit(), because that's more obvious.
  */
 void error_propagate(Error **dst_errp, Error *local_err);
 
-/**
+/*
+ * Prepend some text to @errp's human-readable error message.
+ * The text is made by formatting @fmt, @ap like vprintf().
+ */
+void error_vprepend(Error **errp, const char *fmt, va_list ap);
+
+/*
+ * Prepend some text to @errp's human-readable error message.
+ * The text is made by formatting @fmt, ... like printf().
+ */
+void error_prepend(Error **errp, const char *fmt, ...)
+    GCC_FMT_ATTR(2, 3);
+
+/*
  * Append a printf-style human-readable explanation to an existing error.
- * May be called multiple times, and safe if @errp is NULL.
+ * @errp may be NULL, but not &error_fatal or &error_abort.
+ * Trivially the case if you call it only after error_setg() or
+ * error_propagate().
+ * May be called multiple times.  The resulting hint should end with a
+ * newline.
  */
 void error_append_hint(Error **errp, const char *fmt, ...)
     GCC_FMT_ATTR(2, 3);
@@ -190,9 +259,20 @@ Error *error_copy(const Error *err);
 void error_free(Error *err);
 
 /*
+ * Convenience function to assert that *@errp is set, then silently free it.
+ */
+void error_free_or_abort(Error **errp);
+
+/*
  * Convenience function to error_report() and free @err.
  */
-void error_report_err(Error *);
+void error_report_err(Error *err);
+
+/*
+ * Convenience function to error_prepend(), error_report() and free @err.
+ */
+void error_reportf_err(Error *err, const char *fmt, ...)
+    GCC_FMT_ATTR(2, 3);
 
 /*
  * Just like error_setg(), except you get to specify the error class.
@@ -208,12 +288,14 @@ void error_set_internal(Error **errp,
     GCC_FMT_ATTR(6, 7);
 
 /*
- * Pass to error_setg() & friends to abort() on error.
+ * Special error destination to abort on error.
+ * See error_setg() and error_propagate() for details.
  */
 extern Error *error_abort;
 
 /*
- * Pass to error_setg() & friends to exit(1) on error.
+ * Special error destination to exit(1) on error.
+ * See error_setg() and error_propagate() for details.
  */
 extern Error *error_fatal;
 

@@ -17,7 +17,9 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/exec-all.h"
 #include "qemu/host-utils.h"
 #include "exec/helper-proto.h"
 
@@ -469,3 +471,13 @@ target_ulong helper_pext(target_ulong src, target_ulong mask)
 #include "shift_helper_template.h"
 #undef SHIFT
 #endif
+
+/* Test that BIT is enabled in CR4.  If not, raise an illegal opcode
+   exception.  This reduces the requirements for rare CR4 bits being
+   mapped into HFLAGS.  */
+void helper_cr4_testbit(CPUX86State *env, uint32_t bit)
+{
+    if (unlikely((env->cr[4] & bit) == 0)) {
+        raise_exception_ra(env, EXCP06_ILLOP, GETPC());
+    }
+}

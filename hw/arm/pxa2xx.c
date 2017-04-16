@@ -7,15 +7,20 @@
  * This code is licensed under the GPL.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/arm/pxa.h"
 #include "sysemu/sysemu.h"
 #include "hw/char/serial.h"
 #include "hw/i2c/i2c.h"
-#include "hw/ssi.h"
+#include "hw/ssi/ssi.h"
 #include "sysemu/char.h"
 #include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
+#include "qemu/cutils.h"
 
 static struct {
     hwaddr io_base;
@@ -1102,9 +1107,10 @@ static const MemoryRegionOps pxa2xx_rtc_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
-static int pxa2xx_rtc_init(SysBusDevice *dev)
+static void pxa2xx_rtc_init(Object *obj)
 {
-    PXA2xxRTCState *s = PXA2XX_RTC(dev);
+    PXA2xxRTCState *s = PXA2XX_RTC(obj);
+    SysBusDevice *dev = SYS_BUS_DEVICE(obj);
     struct tm tm;
     int wom;
 
@@ -1133,11 +1139,9 @@ static int pxa2xx_rtc_init(SysBusDevice *dev)
 
     sysbus_init_irq(dev, &s->rtc_irq);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &pxa2xx_rtc_ops, s,
+    memory_region_init_io(&s->iomem, obj, &pxa2xx_rtc_ops, s,
                           "pxa2xx-rtc", 0x10000);
     sysbus_init_mmio(dev, &s->iomem);
-
-    return 0;
 }
 
 static void pxa2xx_rtc_pre_save(void *opaque)
@@ -1190,9 +1194,7 @@ static const VMStateDescription vmstate_pxa2xx_rtc_regs = {
 static void pxa2xx_rtc_sysbus_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
 
-    k->init = pxa2xx_rtc_init;
     dc->desc = "PXA2xx RTC Controller";
     dc->vmsd = &vmstate_pxa2xx_rtc_regs;
 }
@@ -1201,6 +1203,7 @@ static const TypeInfo pxa2xx_rtc_sysbus_info = {
     .name          = TYPE_PXA2XX_RTC,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PXA2xxRTCState),
+    .instance_init = pxa2xx_rtc_init,
     .class_init    = pxa2xx_rtc_sysbus_class_init,
 };
 
@@ -1496,19 +1499,18 @@ PXA2xxI2CState *pxa2xx_i2c_init(hwaddr base,
     return s;
 }
 
-static int pxa2xx_i2c_initfn(SysBusDevice *sbd)
+static void pxa2xx_i2c_initfn(Object *obj)
 {
-    DeviceState *dev = DEVICE(sbd);
-    PXA2xxI2CState *s = PXA2XX_I2C(dev);
+    DeviceState *dev = DEVICE(obj);
+    PXA2xxI2CState *s = PXA2XX_I2C(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     s->bus = i2c_init_bus(dev, "i2c");
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &pxa2xx_i2c_ops, s,
+    memory_region_init_io(&s->iomem, obj, &pxa2xx_i2c_ops, s,
                           "pxa2xx-i2c", s->region_size);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
-
-    return 0;
 }
 
 I2CBus *pxa2xx_i2c_bus(PXA2xxI2CState *s)
@@ -1525,9 +1527,7 @@ static Property pxa2xx_i2c_properties[] = {
 static void pxa2xx_i2c_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
 
-    k->init = pxa2xx_i2c_initfn;
     dc->desc = "PXA2xx I2C Bus Controller";
     dc->vmsd = &vmstate_pxa2xx_i2c;
     dc->props = pxa2xx_i2c_properties;
@@ -1537,6 +1537,7 @@ static const TypeInfo pxa2xx_i2c_info = {
     .name          = TYPE_PXA2XX_I2C,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PXA2xxI2CState),
+    .instance_init = pxa2xx_i2c_initfn,
     .class_init    = pxa2xx_i2c_class_init,
 };
 
@@ -1958,7 +1959,7 @@ static void pxa2xx_fir_instance_init(Object *obj)
     PXA2xxFIrState *s = PXA2XX_FIR(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem, NULL, &pxa2xx_fir_ops, s,
+    memory_region_init_io(&s->iomem, obj, &pxa2xx_fir_ops, s,
                           "pxa2xx-fir", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
@@ -2164,10 +2165,8 @@ PXA2xxState *pxa270_init(MemoryRegion *address_space,
         s->ssp[i] = (SSIBus *)qdev_get_child_bus(dev, "ssi");
     }
 
-    if (usb_enabled()) {
-        sysbus_create_simple("sysbus-ohci", 0x4c000000,
-                        qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
-    }
+    sysbus_create_simple("sysbus-ohci", 0x4c000000,
+                         qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
 
     s->pcmcia[0] = pxa2xx_pcmcia_init(address_space, 0x20000000);
     s->pcmcia[1] = pxa2xx_pcmcia_init(address_space, 0x30000000);
@@ -2297,10 +2296,8 @@ PXA2xxState *pxa255_init(MemoryRegion *address_space, unsigned int sdram_size)
         s->ssp[i] = (SSIBus *)qdev_get_child_bus(dev, "ssi");
     }
 
-    if (usb_enabled()) {
-        sysbus_create_simple("sysbus-ohci", 0x4c000000,
-                        qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
-    }
+    sysbus_create_simple("sysbus-ohci", 0x4c000000,
+                         qdev_get_gpio_in(s->pic, PXA2XX_PIC_USBH1));
 
     s->pcmcia[0] = pxa2xx_pcmcia_init(address_space, 0x20000000);
     s->pcmcia[1] = pxa2xx_pcmcia_init(address_space, 0x30000000);

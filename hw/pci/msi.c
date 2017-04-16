@@ -18,8 +18,11 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/pci/msi.h"
+#include "hw/xen/xen.h"
 #include "qemu/range.h"
+#include "qapi/error.h"
 
 /* PCI_MSI_ADDRESS_LO */
 #define PCI_MSI_ADDRESS_LO_MASK         (~0x3)
@@ -32,8 +35,21 @@
 
 #define PCI_MSI_VECTORS_MAX     32
 
-/* Flag for interrupt controller to declare MSI/MSI-X support */
-bool msi_supported;
+/*
+ * Flag for interrupt controllers to declare broken MSI/MSI-X support.
+ * values: false - broken; true - non-broken.
+ *
+ * Setting this flag to false will remove MSI/MSI-X capability from all devices.
+ *
+ * It is preferable for controllers to set this to true (non-broken) even if
+ * they do not actually support MSI/MSI-X: guests normally probe the controller
+ * type and do not attempt to enable MSI/MSI-X with interrupt controllers not
+ * supporting such, so removing the capability is not required, and
+ * it seems cleaner to have a given device look the same for all boards.
+ *
+ * TODO: some existing controllers violate the above rule. Identify and fix them.
+ */
+bool msi_nonbroken;
 
 /* If we get rid of cap allocator, we won't need this. */
 static inline uint8_t msi_cap_sizeof(uint16_t flags)
@@ -150,15 +166,33 @@ bool msi_enabled(const PCIDevice *dev)
          PCI_MSI_FLAGS_ENABLE);
 }
 
+/*
+ * Make PCI device @dev MSI-capable.
+ * Non-zero @offset puts capability MSI at that offset in PCI config
+ * space.
+ * @nr_vectors is the number of MSI vectors (1, 2, 4, 8, 16 or 32).
+ * If @msi64bit, make the device capable of sending a 64-bit message
+ * address.
+ * If @msi_per_vector_mask, make the device support per-vector masking.
+ * @errp is for returning errors.
+ * Return 0 on success; set @errp and return -errno on error.
+ *
+ * -ENOTSUP means lacking msi support for a msi-capable platform.
+ * -EINVAL means capability overlap, happens when @offset is non-zero,
+ *  also means a programming error, except device assignment, which can check
+ *  if a real HW is broken.
+ */
 int msi_init(struct PCIDevice *dev, uint8_t offset,
-             unsigned int nr_vectors, bool msi64bit, bool msi_per_vector_mask)
+             unsigned int nr_vectors, bool msi64bit,
+             bool msi_per_vector_mask, Error **errp)
 {
     unsigned int vectors_order;
     uint16_t flags;
     uint8_t cap_size;
     int config_offset;
 
-    if (!msi_supported) {
+    if (!msi_nonbroken) {
+        error_setg(errp, "MSI is not supported by interrupt controller");
         return -ENOTSUP;
     }
 
@@ -182,7 +216,8 @@ int msi_init(struct PCIDevice *dev, uint8_t offset,
     }
 
     cap_size = msi_cap_sizeof(flags);
-    config_offset = pci_add_capability(dev, PCI_CAP_ID_MSI, offset, cap_size);
+    config_offset = pci_add_capability2(dev, PCI_CAP_ID_MSI, offset,
+                                        cap_size, errp);
     if (config_offset < 0) {
         return config_offset;
     }
@@ -205,7 +240,8 @@ int msi_init(struct PCIDevice *dev, uint8_t offset,
         pci_set_long(dev->wmask + msi_mask_off(dev, msi64bit),
                      0xffffffff >> (PCI_MSI_VECTORS_MAX - nr_vectors));
     }
-    return config_offset;
+
+    return 0;
 }
 
 void msi_uninit(struct PCIDevice *dev)
@@ -253,10 +289,16 @@ void msi_reset(PCIDevice *dev)
 static bool msi_is_masked(const PCIDevice *dev, unsigned int vector)
 {
     uint16_t flags = pci_get_word(dev->config + msi_flags_off(dev));
-    uint32_t mask;
+    uint32_t mask, data;
+    bool msi64bit = flags & PCI_MSI_FLAGS_64BIT;
     assert(vector < PCI_MSI_VECTORS_MAX);
 
     if (!(flags & PCI_MSI_FLAGS_MASKBIT)) {
+        return false;
+    }
+
+    data = pci_get_word(dev->config + msi_data_off(dev, msi64bit));
+    if (xen_is_pirq_msi(data)) {
         return false;
     }
 
@@ -294,7 +336,7 @@ void msi_send_message(PCIDevice *dev, MSIMessage msg)
 {
     MemTxAttrs attrs = {};
 
-    attrs.stream_id = (pci_bus_num(dev->bus) << 8) | dev->devfn;
+    attrs.requester_id = pci_requester_id(dev);
     address_space_stl_le(&dev->bus_master_as, msg.address, msg.data,
                          attrs, NULL);
 }

@@ -17,6 +17,7 @@
  *  Copyright (C) 2008, Red Hat, Amit Shah (amit.shah@redhat.com)
  *  Copyright (C) 2008, IBM, Muli Ben-Yehuda (muli@il.ibm.com)
  */
+
 #ifndef HW_VFIO_VFIO_COMMON_H
 #define HW_VFIO_VFIO_COMMON_H
 
@@ -25,6 +26,9 @@
 #include "exec/memory.h"
 #include "qemu/queue.h"
 #include "qemu/notify.h"
+#ifdef CONFIG_LINUX
+#include <linux/vfio.h>
+#endif
 
 /*#define DEBUG_VFIO*/
 #ifdef DEBUG_VFIO
@@ -40,14 +44,21 @@ enum {
     VFIO_DEVICE_TYPE_PLATFORM = 1,
 };
 
+typedef struct VFIOMmap {
+    MemoryRegion mem;
+    void *mmap;
+    off_t offset;
+    size_t size;
+} VFIOMmap;
+
 typedef struct VFIORegion {
     struct VFIODevice *vbasedev;
     off_t fd_offset; /* offset of region within device fd */
-    MemoryRegion mem; /* slow, read/write access */
-    MemoryRegion mmap_mem; /* direct mapped access */
-    void *mmap;
+    MemoryRegion *mem; /* slow, read/write access */
     size_t size;
     uint32_t flags; /* VFIO region flags (rd/wr/mmap) */
+    uint32_t nr_mmaps;
+    VFIOMmap *mmaps;
     uint8_t nr; /* cache the region number for debug */
 } VFIORegion;
 
@@ -63,6 +74,8 @@ typedef struct VFIOContainer {
     VFIOAddressSpace *space;
     int fd; /* /dev/vfio/vfio, empowered by the attached groups */
     MemoryListener listener;
+    MemoryListener prereg_listener;
+    unsigned iommu_type;
     int error;
     bool initialized;
     /*
@@ -70,9 +83,8 @@ typedef struct VFIOContainer {
      * contiguous IOVA window.  We may need to generalize that in
      * future
      */
-    hwaddr min_iova, max_iova;
-    uint64_t iova_pgsizes;
     QLIST_HEAD(, VFIOGuestIOMMU) giommu_list;
+    QLIST_HEAD(, VFIOHostDMAWindow) hostwin_list;
     QLIST_HEAD(, VFIOGroup) group_list;
     QLIST_ENTRY(VFIOContainer) next;
 } VFIOContainer;
@@ -80,15 +92,24 @@ typedef struct VFIOContainer {
 typedef struct VFIOGuestIOMMU {
     VFIOContainer *container;
     MemoryRegion *iommu;
+    hwaddr iommu_offset;
     Notifier n;
     QLIST_ENTRY(VFIOGuestIOMMU) giommu_next;
 } VFIOGuestIOMMU;
+
+typedef struct VFIOHostDMAWindow {
+    hwaddr min_iova;
+    hwaddr max_iova;
+    uint64_t iova_pgsizes;
+    QLIST_ENTRY(VFIOHostDMAWindow) hostwin_next;
+} VFIOHostDMAWindow;
 
 typedef struct VFIODeviceOps VFIODeviceOps;
 
 typedef struct VFIODevice {
     QLIST_ENTRY(VFIODevice) next;
     struct VFIOGroup *group;
+    char *sysfsdev;
     char *name;
     int fd;
     int type;
@@ -124,10 +145,12 @@ void vfio_region_write(void *opaque, hwaddr addr,
                            uint64_t data, unsigned size);
 uint64_t vfio_region_read(void *opaque,
                           hwaddr addr, unsigned size);
-int vfio_mmap_region(Object *vdev, VFIORegion *region,
-                     MemoryRegion *mem, MemoryRegion *submem,
-                     void **map, size_t size, off_t offset,
-                     const char *name);
+int vfio_region_setup(Object *obj, VFIODevice *vbasedev, VFIORegion *region,
+                      int index, const char *name);
+int vfio_region_mmap(VFIORegion *region);
+void vfio_region_mmaps_set_enabled(VFIORegion *region, bool enabled);
+void vfio_region_exit(VFIORegion *region);
+void vfio_region_finalize(VFIORegion *region);
 void vfio_reset_handler(void *opaque);
 VFIOGroup *vfio_get_group(int groupid, AddressSpace *as);
 void vfio_put_group(VFIOGroup *group);
@@ -138,4 +161,18 @@ extern const MemoryRegionOps vfio_region_ops;
 extern QLIST_HEAD(vfio_group_head, VFIOGroup) vfio_group_list;
 extern QLIST_HEAD(vfio_as_head, VFIOAddressSpace) vfio_address_spaces;
 
-#endif /* !HW_VFIO_VFIO_COMMON_H */
+#ifdef CONFIG_LINUX
+int vfio_get_region_info(VFIODevice *vbasedev, int index,
+                         struct vfio_region_info **info);
+int vfio_get_dev_region_info(VFIODevice *vbasedev, uint32_t type,
+                             uint32_t subtype, struct vfio_region_info **info);
+#endif
+extern const MemoryListener vfio_prereg_listener;
+
+int vfio_spapr_create_window(VFIOContainer *container,
+                             MemoryRegionSection *section,
+                             hwaddr *pgsize);
+int vfio_spapr_remove_window(VFIOContainer *container,
+                             hwaddr offset_within_address_space);
+
+#endif /* HW_VFIO_VFIO_COMMON_H */

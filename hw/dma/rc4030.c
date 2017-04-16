@@ -22,10 +22,12 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/mips/mips.h"
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#include "qemu/log.h"
 #include "exec/address-spaces.h"
 #include "trace.h"
 
@@ -111,7 +113,7 @@ static void set_next_tick(rc4030State *s)
     tm_hz = 1000 / (s->itr + 1);
 
     timer_mod(s->periodic_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                   get_ticks_per_sec() / tm_hz);
+                   NANOSECONDS_PER_SECOND / tm_hz);
 }
 
 /* called for accesses to rc4030 */

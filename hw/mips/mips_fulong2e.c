@@ -18,6 +18,8 @@
  * http://www.loongsondeveloper.com/doc/Loongson2EUserGuide.pdf
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/i386/pc.h"
 #include "hw/char/serial.h"
@@ -116,7 +118,7 @@ static int64_t load_kernel (CPUMIPSState *env)
 
     if (load_elf(loaderparams.kernel_filename, cpu_mips_kseg0_to_phys, NULL,
                  (uint64_t *)&kernel_entry, (uint64_t *)&kernel_low,
-                 (uint64_t *)&kernel_high, 0, EM_MIPS, 1) < 0) {
+                 (uint64_t *)&kernel_high, 0, EM_MIPS, 1, 0) < 0) {
         fprintf(stderr, "qemu: could not load kernel '%s'\n",
                 loaderparams.kernel_filename);
         exit(1);
@@ -332,8 +334,8 @@ static void mips_fulong2e_init(MachineState *machine)
     }
 
     /* Init internal devices */
-    cpu_mips_irq_init_cpu(env);
-    cpu_mips_clock_init(env);
+    cpu_mips_irq_init_cpu(cpu);
+    cpu_mips_clock_init(cpu);
 
     /* North bridge, Bonito --> IP2 */
     pci_bus = bonito_init((qemu_irq *)&(env->irq[2]));
@@ -365,7 +367,7 @@ static void mips_fulong2e_init(MachineState *machine)
 
     /* init other devices */
     pit = pit_init(isa_bus, 0x40, 0, NULL);
-    DMA_init(0);
+    DMA_init(isa_bus, 0);
 
     /* Super I/O */
     isa_create_simple(isa_bus, "i8042");

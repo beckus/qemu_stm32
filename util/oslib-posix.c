@@ -26,51 +26,29 @@
  * THE SOFTWARE.
  */
 
-/* The following block of code temporarily renames the daemon() function so the
-   compiler does not see the warning associated with it in stdlib.h on OSX */
-#ifdef __APPLE__
-#define daemon qemu_fake_daemon_function
-#include <stdlib.h>
-#undef daemon
-extern int daemon(int, int);
-#endif
-
-#if defined(__linux__) && (defined(__x86_64__) || defined(__arm__))
-   /* Use 2 MiB alignment so transparent hugepages can be used by KVM.
-      Valgrind does not support alignments larger than 1 MiB,
-      therefore we need special code which handles running on Valgrind. */
-#  define QEMU_VMALLOC_ALIGN (512 * 4096)
-#elif defined(__linux__) && defined(__s390x__)
-   /* Use 1 MiB (segment size) alignment so gmap can be used by KVM. */
-#  define QEMU_VMALLOC_ALIGN (256 * 4096)
-#else
-#  define QEMU_VMALLOC_ALIGN getpagesize()
-#endif
-#define HUGETLBFS_MAGIC       0x958458f6
-
+#include "qemu/osdep.h"
 #include <termios.h>
-#include <unistd.h>
 #include <termios.h>
 
 #include <glib/gprintf.h>
 
-#include "config-host.h"
 #include "sysemu/sysemu.h"
 #include "trace.h"
+#include "qapi/error.h"
 #include "qemu/sockets.h"
-#include <sys/mman.h>
 #include <libgen.h>
-#include <setjmp.h>
 #include <sys/signal.h>
+#include "qemu/cutils.h"
 
 #ifdef CONFIG_LINUX
 #include <sys/syscall.h>
-#include <sys/vfs.h>
 #endif
 
 #ifdef __FreeBSD__
 #include <sys/sysctl.h>
 #endif
+
+#include "qemu/mmap-alloc.h"
 
 int qemu_get_thread_id(void)
 {
@@ -128,10 +106,7 @@ void *qemu_memalign(size_t alignment, size_t size)
 void *qemu_anon_ram_alloc(size_t size, uint64_t *alignment)
 {
     size_t align = QEMU_VMALLOC_ALIGN;
-    size_t total = size + align;
-    void *ptr = mmap(0, total, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    size_t offset = QEMU_ALIGN_UP((uintptr_t)ptr, align) - (uintptr_t)ptr;
-    void *ptr1;
+    void *ptr = qemu_ram_mmap(-1, size, align, false);
 
     if (ptr == MAP_FAILED) {
         return NULL;
@@ -139,23 +114,6 @@ void *qemu_anon_ram_alloc(size_t size, uint64_t *alignment)
 
     if (alignment) {
         *alignment = align;
-    }
-
-    ptr1 = mmap(ptr + offset, size, PROT_READ | PROT_WRITE,
-                MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-    if (ptr1 == MAP_FAILED) {
-        munmap(ptr, total);
-        return NULL;
-    }
-
-    ptr += offset;
-    total -= offset;
-
-    if (offset > 0) {
-        munmap(ptr - offset, offset);
-    }
-    if (total > size + getpagesize()) {
-        munmap(ptr + size + getpagesize(), total - size - getpagesize());
     }
 
     trace_qemu_anon_ram_alloc(size, ptr);
@@ -171,9 +129,7 @@ void qemu_vfree(void *ptr)
 void qemu_anon_ram_free(void *ptr, size_t size)
 {
     trace_qemu_anon_ram_free(ptr, size);
-    if (ptr) {
-        munmap(ptr, size + getpagesize());
-    }
+    qemu_ram_munmap(ptr, size);
 }
 
 void qemu_set_block(int fd)
@@ -343,9 +299,11 @@ void qemu_init_exec_dir(const char *argv0)
             return;
         }
     }
-    dir = dirname(p);
+    dir = g_path_get_dirname(p);
 
     pstrcpy(exec_dir, sizeof(exec_dir), dir);
+
+    g_free(dir);
 }
 
 char *qemu_get_exec_dir(void)
@@ -360,27 +318,7 @@ static void sigbus_handler(int signal)
     siglongjmp(sigjump, 1);
 }
 
-static size_t fd_getpagesize(int fd)
-{
-#ifdef CONFIG_LINUX
-    struct statfs fs;
-    int ret;
-
-    if (fd != -1) {
-        do {
-            ret = fstatfs(fd, &fs);
-        } while (ret != 0 && errno == EINTR);
-
-        if (ret == 0 && fs.f_type == HUGETLBFS_MAGIC) {
-            return fs.f_bsize;
-        }
-    }
-#endif
-
-    return getpagesize();
-}
-
-void os_mem_prealloc(int fd, char *area, size_t memory)
+void os_mem_prealloc(int fd, char *area, size_t memory, Error **errp)
 {
     int ret;
     struct sigaction act, oldact;
@@ -392,8 +330,9 @@ void os_mem_prealloc(int fd, char *area, size_t memory)
 
     ret = sigaction(SIGBUS, &act, &oldact);
     if (ret) {
-        perror("os_mem_prealloc: failed to install signal handler");
-        exit(1);
+        error_setg_errno(errp, errno,
+            "os_mem_prealloc: failed to install signal handler");
+        return;
     }
 
     /* unblock SIGBUS */
@@ -402,27 +341,26 @@ void os_mem_prealloc(int fd, char *area, size_t memory)
     pthread_sigmask(SIG_UNBLOCK, &set, &oldset);
 
     if (sigsetjmp(sigjump, 1)) {
-        fprintf(stderr, "os_mem_prealloc: Insufficient free host memory "
-                        "pages available to allocate guest RAM\n");
-        exit(1);
+        error_setg(errp, "os_mem_prealloc: Insufficient free host memory "
+            "pages available to allocate guest RAM\n");
     } else {
         int i;
-        size_t hpagesize = fd_getpagesize(fd);
+        size_t hpagesize = qemu_fd_getpagesize(fd);
         size_t numpages = DIV_ROUND_UP(memory, hpagesize);
 
         /* MAP_POPULATE silently ignores failures */
         for (i = 0; i < numpages; i++) {
             memset(area + (hpagesize * i), 0, 1);
         }
-
-        ret = sigaction(SIGBUS, &oldact, NULL);
-        if (ret) {
-            perror("os_mem_prealloc: failed to reinstall signal handler");
-            exit(1);
-        }
-
-        pthread_sigmask(SIG_SETMASK, &oldset, NULL);
     }
+
+    ret = sigaction(SIGBUS, &oldact, NULL);
+    if (ret) {
+        /* Terminate QEMU since it can't recover from error */
+        perror("os_mem_prealloc: failed to reinstall signal handler");
+        exit(1);
+    }
+    pthread_sigmask(SIG_SETMASK, &oldset, NULL);
 }
 
 
@@ -489,4 +427,75 @@ int qemu_read_password(char *buf, int buf_size)
     buf[i] = '\0';
     printf("\n");
     return ret;
+}
+
+
+pid_t qemu_fork(Error **errp)
+{
+    sigset_t oldmask, newmask;
+    struct sigaction sig_action;
+    int saved_errno;
+    pid_t pid;
+
+    /*
+     * Need to block signals now, so that child process can safely
+     * kill off caller's signal handlers without a race.
+     */
+    sigfillset(&newmask);
+    if (pthread_sigmask(SIG_SETMASK, &newmask, &oldmask) != 0) {
+        error_setg_errno(errp, errno,
+                         "cannot block signals");
+        return -1;
+    }
+
+    pid = fork();
+    saved_errno = errno;
+
+    if (pid < 0) {
+        /* attempt to restore signal mask, but ignore failure, to
+         * avoid obscuring the fork failure */
+        (void)pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+        error_setg_errno(errp, saved_errno,
+                         "cannot fork child process");
+        errno = saved_errno;
+        return -1;
+    } else if (pid) {
+        /* parent process */
+
+        /* Restore our original signal mask now that the child is
+         * safely running. Only documented failures are EFAULT (not
+         * possible, since we are using just-grabbed mask) or EINVAL
+         * (not possible, since we are using correct arguments).  */
+        (void)pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+    } else {
+        /* child process */
+        size_t i;
+
+        /* Clear out all signal handlers from parent so nothing
+         * unexpected can happen in our child once we unblock
+         * signals */
+        sig_action.sa_handler = SIG_DFL;
+        sig_action.sa_flags = 0;
+        sigemptyset(&sig_action.sa_mask);
+
+        for (i = 1; i < NSIG; i++) {
+            /* Only possible errors are EFAULT or EINVAL The former
+             * won't happen, the latter we expect, so no need to check
+             * return value */
+            (void)sigaction(i, &sig_action, NULL);
+        }
+
+        /* Unmask all signals in child, since we've no idea what the
+         * caller's done with their signal mask and don't want to
+         * propagate that to children */
+        sigemptyset(&newmask);
+        if (pthread_sigmask(SIG_SETMASK, &newmask, NULL) != 0) {
+            Error *local_err = NULL;
+            error_setg_errno(&local_err, errno,
+                             "cannot unblock signals");
+            error_report_err(local_err);
+            _exit(1);
+        }
+    }
+    return pid;
 }

@@ -18,7 +18,9 @@
  * <http://www.gnu.org/licenses/lgpl-2.1.html>
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/exec-all.h"
 #include "qemu-common.h"
 #include "exec/helper-proto.h"
 #include <zlib.h> /* For crc32 */

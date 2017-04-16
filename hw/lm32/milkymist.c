@@ -17,6 +17,9 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/block/flash.h"
@@ -30,6 +33,7 @@
 #include "milkymist-hw.h"
 #include "lm32.h"
 #include "exec/address-spaces.h"
+#include "qemu/cutils.h"
 
 #define BIOS_FILENAME    "mmone-bios.bin"
 #define BIOS_OFFSET      0x00860000
@@ -155,7 +159,7 @@ milkymist_init(MachineState *machine)
     }
     g_free(bios_filename);
 
-    milkymist_uart_create(0x60000000, irq[0]);
+    milkymist_uart_create(0x60000000, irq[0], serial_hds[0]);
     milkymist_sysctl_create(0x60001000, irq[1], irq[2], irq[3],
             80000000, 0x10014d31, 0x0000041f, 0x00000001);
     milkymist_hpdmc_create(0x60002000);
@@ -163,20 +167,22 @@ milkymist_init(MachineState *machine)
     milkymist_memcard_create(0x60004000);
     milkymist_ac97_create(0x60005000, irq[4], irq[5], irq[6], irq[7]);
     milkymist_pfpu_create(0x60006000, irq[8]);
-    milkymist_tmu2_create(0x60007000, irq[9]);
+    if (machine->enable_graphics) {
+        milkymist_tmu2_create(0x60007000, irq[9]);
+    }
     milkymist_minimac2_create(0x60008000, 0x30000000, irq[10], irq[11]);
     milkymist_softusb_create(0x6000f000, irq[15],
             0x20000000, 0x1000, 0x20020000, 0x2000);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init();
+    env->juart_state = lm32_juart_init(serial_hds[1]);
 
     if (kernel_filename) {
         uint64_t entry;
 
         /* Boots a kernel elf binary.  */
         kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
-                               1, EM_LATTICEMICO32, 0);
+                               1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {

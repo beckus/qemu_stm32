@@ -1,5 +1,4 @@
-#include "stddef.h"
-#include "qemu/typedefs.h"
+#include "qemu/osdep.h"
 
 const MonitorDef *target_monitor_defs(void);
 

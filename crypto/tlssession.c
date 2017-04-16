@@ -18,9 +18,11 @@
  *
  */
 
+#include "qemu/osdep.h"
 #include "crypto/tlssession.h"
 #include "crypto/tlscredsanon.h"
 #include "crypto/tlscredsx509.h"
+#include "qapi/error.h"
 #include "qemu/acl.h"
 #include "trace.h"
 
@@ -130,14 +132,22 @@ qcrypto_tls_session_new(QCryptoTLSCreds *creds,
     if (object_dynamic_cast(OBJECT(creds),
                             TYPE_QCRYPTO_TLS_CREDS_ANON)) {
         QCryptoTLSCredsAnon *acreds = QCRYPTO_TLS_CREDS_ANON(creds);
+        char *prio;
 
-        ret = gnutls_priority_set_direct(session->handle,
-                                         "NORMAL:+ANON-DH", NULL);
+        if (creds->priority != NULL) {
+            prio = g_strdup_printf("%s:+ANON-DH", creds->priority);
+        } else {
+            prio = g_strdup(CONFIG_TLS_PRIORITY ":+ANON-DH");
+        }
+
+        ret = gnutls_priority_set_direct(session->handle, prio, NULL);
         if (ret < 0) {
-            error_setg(errp, "Unable to set TLS session priority: %s",
-                       gnutls_strerror(ret));
+            error_setg(errp, "Unable to set TLS session priority %s: %s",
+                       prio, gnutls_strerror(ret));
+            g_free(prio);
             goto error;
         }
+        g_free(prio);
         if (creds->endpoint == QCRYPTO_TLS_CREDS_ENDPOINT_SERVER) {
             ret = gnutls_credentials_set(session->handle,
                                          GNUTLS_CRD_ANON,
@@ -155,11 +165,15 @@ qcrypto_tls_session_new(QCryptoTLSCreds *creds,
     } else if (object_dynamic_cast(OBJECT(creds),
                                    TYPE_QCRYPTO_TLS_CREDS_X509)) {
         QCryptoTLSCredsX509 *tcreds = QCRYPTO_TLS_CREDS_X509(creds);
+        const char *prio = creds->priority;
+        if (!prio) {
+            prio = CONFIG_TLS_PRIORITY;
+        }
 
-        ret = gnutls_set_default_priority(session->handle);
+        ret = gnutls_priority_set_direct(session->handle, prio, NULL);
         if (ret < 0) {
-            error_setg(errp, "Cannot set default TLS session priority: %s",
-                       gnutls_strerror(ret));
+            error_setg(errp, "Cannot set default TLS session priority %s: %s",
+                       prio, gnutls_strerror(ret));
             goto error;
         }
         ret = gnutls_credentials_set(session->handle,
@@ -304,9 +318,9 @@ qcrypto_tls_session_check_certificate(QCryptoTLSSession *session,
 
                 allow = qemu_acl_party_is_allowed(acl, session->peername);
 
-                error_setg(errp, "TLS x509 ACL check for %s is %s",
-                           session->peername, allow ? "allowed" : "denied");
                 if (!allow) {
+                    error_setg(errp, "TLS x509 ACL check for %s is denied",
+                               session->peername);
                     goto error;
                 }
             }

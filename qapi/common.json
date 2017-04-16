@@ -3,7 +3,7 @@
 # QAPI common definitions
 
 ##
-# @ErrorClass
+# @QapiErrorClass
 #
 # QEMU error classes
 #
@@ -24,7 +24,8 @@
 #
 # Since: 1.2
 ##
-{ 'enum': 'ErrorClass',
+{ 'enum': 'QapiErrorClass',
+  # Keep this in sync with ErrorClass in error.h
   'data': [ 'GenericError', 'CommandNotFound', 'DeviceEncrypted',
             'DeviceNotActive', 'DeviceNotFound', 'KVMMissingCap' ] }
 
@@ -114,3 +115,19 @@
 ##
 { 'enum': 'OnOffAuto',
   'data': [ 'auto', 'on', 'off' ] }
+
+##
+# @OnOffSplit
+#
+# An enumeration of three values: on, off, and split
+#
+# @on: Enabled
+#
+# @off: Disabled
+#
+# @split: Mixed
+#
+# Since: 2.6
+##
+{ 'enum': 'OnOffSplit',
+  'data': [ 'on', 'off', 'split' ] }

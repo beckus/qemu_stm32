@@ -17,19 +17,17 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "config.h"
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "sysemu/cpus.h"
+#include "exec/exec-all.h"
 #include "exec/memory-internal.h"
 
 bool exit_request;
 CPUState *tcg_current_cpu;
 
-/* exit the current TB from a signal handler. The host registers are
-   restored in a state compatible with the CPU emulator
- */
-#if defined(CONFIG_SOFTMMU)
-void cpu_resume_from_signal(CPUState *cpu, void *puc)
+/* exit the current TB, but without causing any exception to be raised */
+void cpu_loop_exit_noexc(CPUState *cpu)
 {
     /* XXX: restore cpu registers saved in host registers */
 
@@ -37,37 +35,38 @@ void cpu_resume_from_signal(CPUState *cpu, void *puc)
     siglongjmp(cpu->jmp_env, 1);
 }
 
-void cpu_reload_memory_map(CPUState *cpu)
+#if defined(CONFIG_SOFTMMU)
+void cpu_reloading_memory_map(void)
 {
-    AddressSpaceDispatch *d;
-
     if (qemu_in_vcpu_thread()) {
-        /* Do not let the guest prolong the critical section as much as it
-         * as it desires.
+        /* The guest can in theory prolong the RCU critical section as long
+         * as it feels like. The major problem with this is that because it
+         * can do multiple reconfigurations of the memory map within the
+         * critical section, we could potentially accumulate an unbounded
+         * collection of memory data structures awaiting reclamation.
          *
-         * Currently, this is prevented by the I/O thread's periodinc kicking
-         * of the VCPU thread (iothread_requesting_mutex, qemu_cpu_kick_thread)
-         * but this will go away once TCG's execution moves out of the global
-         * mutex.
+         * Because the only thing we're currently protecting with RCU is the
+         * memory data structures, it's sufficient to break the critical section
+         * in this callback, which we know will get called every time the
+         * memory map is rearranged.
+         *
+         * (If we add anything else in the system that uses RCU to protect
+         * its data structures, we will need to implement some other mechanism
+         * to force TCG CPUs to exit the critical section, at which point this
+         * part of this callback might become unnecessary.)
          *
          * This pair matches cpu_exec's rcu_read_lock()/rcu_read_unlock(), which
-         * only protects cpu->as->dispatch.  Since we reload it below, we can
-         * split the critical section.
+         * only protects cpu->as->dispatch. Since we know our caller is about
+         * to reload it, it's safe to split the critical section.
          */
         rcu_read_unlock();
         rcu_read_lock();
     }
-
-    /* The CPU and TLB are protected by the iothread lock.  */
-    d = atomic_rcu_read(&cpu->as->dispatch);
-    cpu->memory_dispatch = d;
-    tlb_flush(cpu, 1);
 }
 #endif
 
 void cpu_loop_exit(CPUState *cpu)
 {
-    cpu->current_tb = NULL;
     siglongjmp(cpu->jmp_env, 1);
 }
 
@@ -76,6 +75,5 @@ void cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc)
     if (pc) {
         cpu_restore_state(cpu, pc);
     }
-    cpu->current_tb = NULL;
     siglongjmp(cpu->jmp_env, 1);
 }

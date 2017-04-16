@@ -6,7 +6,7 @@ BUILD_DIR=$(CURDIR)
 # Before including a proper config-host.mak, assume we are in the source tree
 SRC_PATH=.
 
-UNCHECKED_GOALS := %clean TAGS cscope ctags
+UNCHECKED_GOALS := %clean TAGS cscope ctags docker docker-%
 
 # All following code might depend on configuration variables
 ifneq ($(wildcard config-host.mak),)
@@ -30,8 +30,7 @@ CONFIG_ALL=y
 -include config-all-devices.mak
 -include config-all-disas.mak
 
-include $(SRC_PATH)/rules.mak
-config-host.mak: $(SRC_PATH)/configure
+config-host.mak: $(SRC_PATH)/configure $(SRC_PATH)/pc-bios
 	@echo $@ is out-of-date, running configure
 	@# TODO: The next lines include code which supports a smooth
 	@# transition from old configurations without config.status.
@@ -49,7 +48,9 @@ ifneq ($(filter-out $(UNCHECKED_GOALS),$(MAKECMDGOALS)),$(if $(MAKECMDGOALS),,fa
 endif
 endif
 
-GENERATED_HEADERS = config-host.h qemu-options.def
+include $(SRC_PATH)/rules.mak
+
+GENERATED_HEADERS = qemu-version.h config-host.h qemu-options.def
 GENERATED_HEADERS += qmp-commands.h qapi-types.h qapi-visit.h qapi-event.h
 GENERATED_SOURCES += qmp-marshal.c qapi-types.c qapi-visit.c qapi-event.c
 GENERATED_HEADERS += qmp-introspect.h
@@ -81,7 +82,7 @@ Makefile: ;
 configure: ;
 
 .PHONY: all clean cscope distclean dvi html info install install-doc \
-	pdf recurse-all speed test dist msi
+	pdf recurse-all speed test dist msi FORCE
 
 $(call set-vpath, $(SRC_PATH))
 
@@ -92,9 +93,6 @@ HELPERS-$(CONFIG_LINUX) = qemu-bridge-helper$(EXESUF)
 ifdef BUILD_DOCS
 DOCS=qemu-doc.html qemu-tech.html qemu.1 qemu-img.1 qemu-nbd.8 qemu-ga.8
 DOCS+=qmp-commands.txt
-ifdef CONFIG_LINUX
-DOCS+=kvm_stat.1
-endif
 ifdef CONFIG_VIRTFS
 DOCS+=fsdev/virtfs-proxy-helper.1
 endif
@@ -119,7 +117,7 @@ endif
 
 -include $(SUBDIR_DEVICES_MAK_DEP)
 
-%/config-devices.mak: default-configs/%.mak
+%/config-devices.mak: default-configs/%.mak $(SRC_PATH)/scripts/make_device_config.sh
 	$(call quiet-command, \
             $(SHELL) $(SRC_PATH)/scripts/make_device_config.sh $< $*-config-devices.mak.d $@ > $@.tmp, "  GEN   $@.tmp")
 	$(call quiet-command, if test -f $@; then \
@@ -151,24 +149,47 @@ dummy := $(call unnest-vars,, \
                 stub-obj-y \
                 util-obj-y \
                 qga-obj-y \
+                ivshmem-client-obj-y \
+                ivshmem-server-obj-y \
                 qga-vss-dll-obj-y \
                 block-obj-y \
                 block-obj-m \
                 crypto-obj-y \
                 crypto-aes-obj-y \
                 qom-obj-y \
+                io-obj-y \
                 common-obj-y \
                 common-obj-m)
 
 ifneq ($(wildcard config-host.mak),)
-include $(SRC_PATH)/tests/Makefile
+include $(SRC_PATH)/tests/Makefile.include
 endif
 
 all: $(DOCS) $(TOOLS) $(HELPERS-y) recurse-all modules
 
+qemu-version.h: FORCE
+	$(call quiet-command, \
+		(cd $(SRC_PATH); \
+		printf '#define QEMU_PKGVERSION '; \
+		if test -n "$(PKGVERSION)"; then \
+			printf '"$(PKGVERSION)"\n'; \
+		else \
+			if test -d .git; then \
+				printf '" ('; \
+				git describe --match 'v*' 2>/dev/null | tr -d '\n'; \
+				if ! git diff-index --quiet HEAD &>/dev/null; then \
+					printf -- '-dirty'; \
+				fi; \
+				printf ')"\n'; \
+			else \
+				printf '""\n'; \
+			fi; \
+		fi) > $@.tmp)
+	$(call quiet-command, cmp -s $@ $@.tmp || mv $@.tmp $@)
+
 config-host.h: config-host.h-timestamp
 config-host.h-timestamp: config-host.mak
-qemu-options.def: $(SRC_PATH)/qemu-options.hx
+qemu-options.def: $(SRC_PATH)/qemu-options.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -h < $< > $@,"  GEN   $@")
 
 SUBDIR_RULES=$(patsubst %,subdir-%, $(TARGET_DIRS))
@@ -176,6 +197,7 @@ SOFTMMU_SUBDIR_RULES=$(filter %-softmmu,$(SUBDIR_RULES))
 
 $(SOFTMMU_SUBDIR_RULES): $(block-obj-y)
 $(SOFTMMU_SUBDIR_RULES): $(crypto-obj-y)
+$(SOFTMMU_SUBDIR_RULES): $(io-obj-y)
 $(SOFTMMU_SUBDIR_RULES): config-all-devices.mak
 
 subdir-%:
@@ -203,8 +225,9 @@ dtc/%:
 $(SUBDIR_RULES): libqemuutil.a libqemustub.a $(common-obj-y) $(qom-obj-y) $(crypto-aes-obj-$(CONFIG_USER_ONLY))
 
 ROMSUBDIR_RULES=$(patsubst %,romsubdir-%, $(ROMS))
+# Only keep -O and -g cflags
 romsubdir-%:
-	$(call quiet-command,$(MAKE) $(SUBDIR_MAKEFLAGS) -C pc-bios/$* V="$(V)" TARGET_DIR="$*/",)
+	$(call quiet-command,$(MAKE) $(SUBDIR_MAKEFLAGS) -C pc-bios/$* V="$(V)" TARGET_DIR="$*/" CFLAGS="$(filter -O% -g%,$(CFLAGS))",)
 
 ALL_SUBDIRS=$(TARGET_DIRS) $(patsubst %,pc-bios/%, $(ROMS))
 
@@ -230,16 +253,16 @@ util/module.o-cflags = -D'CONFIG_BLOCK_MODULES=$(block-modules)'
 
 qemu-img.o: qemu-img-cmds.h
 
-qemu-img$(EXESUF): qemu-img.o $(block-obj-y) $(crypto-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
-qemu-nbd$(EXESUF): qemu-nbd.o $(block-obj-y) $(crypto-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
-qemu-io$(EXESUF): qemu-io.o $(block-obj-y) $(crypto-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
+qemu-img$(EXESUF): qemu-img.o $(block-obj-y) $(crypto-obj-y) $(io-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
+qemu-nbd$(EXESUF): qemu-nbd.o $(block-obj-y) $(crypto-obj-y) $(io-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
+qemu-io$(EXESUF): qemu-io.o $(block-obj-y) $(crypto-obj-y) $(io-obj-y) $(qom-obj-y) libqemuutil.a libqemustub.a
 
-qemu-bridge-helper$(EXESUF): qemu-bridge-helper.o
+qemu-bridge-helper$(EXESUF): qemu-bridge-helper.o libqemuutil.a libqemustub.a
 
-fsdev/virtfs-proxy-helper$(EXESUF): fsdev/virtfs-proxy-helper.o fsdev/virtio-9p-marshal.o libqemuutil.a libqemustub.a
+fsdev/virtfs-proxy-helper$(EXESUF): fsdev/virtfs-proxy-helper.o fsdev/9p-marshal.o fsdev/9p-iov-marshal.o libqemuutil.a libqemustub.a
 fsdev/virtfs-proxy-helper$(EXESUF): LIBS += -lcap
 
-qemu-img-cmds.h: $(SRC_PATH)/qemu-img-cmds.hx
+qemu-img-cmds.h: $(SRC_PATH)/qemu-img-cmds.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -h < $< > $@,"  GEN   $@")
 
 qemu-ga$(EXESUF): LIBS = $(LIBS_QGA)
@@ -267,7 +290,9 @@ $(SRC_PATH)/qga/qapi-schema.json $(SRC_PATH)/scripts/qapi-commands.py $(qapi-py)
 
 qapi-modules = $(SRC_PATH)/qapi-schema.json $(SRC_PATH)/qapi/common.json \
                $(SRC_PATH)/qapi/block.json $(SRC_PATH)/qapi/block-core.json \
-               $(SRC_PATH)/qapi/event.json $(SRC_PATH)/qapi/introspect.json
+               $(SRC_PATH)/qapi/event.json $(SRC_PATH)/qapi/introspect.json \
+               $(SRC_PATH)/qapi/crypto.json $(SRC_PATH)/qapi/rocker.json \
+               $(SRC_PATH)/qapi/trace.json
 
 qapi-types.c qapi-types.h :\
 $(qapi-modules) $(SRC_PATH)/scripts/qapi-types.py $(qapi-py)
@@ -298,18 +323,15 @@ $(qapi-modules) $(SRC_PATH)/scripts/qapi-introspect.py $(qapi-py)
 QGALIB_GEN=$(addprefix qga/qapi-generated/, qga-qapi-types.h qga-qapi-visit.h qga-qmp-commands.h)
 $(qga-obj-y) qemu-ga.o: $(QGALIB_GEN)
 
-# we require QGA_VSS_PROVIDER files to be built alongside qemu-ga
-# executable since they are shipped together, but we don't want to actually
-# link against them
-qemu-ga$(EXESUF): $(qga-obj-y) libqemuutil.a libqemustub.a $(QGA_VSS_PROVIDER)
-	$(call LINK, $(filter-out $(QGA_VSS_PROVIDER), $^))
+qemu-ga$(EXESUF): $(qga-obj-y) libqemuutil.a libqemustub.a
+	$(call LINK, $^)
 
 ifdef QEMU_GA_MSI_ENABLED
 QEMU_GA_MSI=qemu-ga-$(ARCH).msi
 
 msi: $(QEMU_GA_MSI)
 
-$(QEMU_GA_MSI): qemu-ga.exe
+$(QEMU_GA_MSI): qemu-ga.exe $(QGA_VSS_PROVIDER)
 
 $(QEMU_GA_MSI): config-host.mak
 
@@ -320,6 +342,16 @@ else
 msi:
 	@echo "MSI build not configured or dependency resolution failed (reconfigure with --enable-guest-agent-msi option)"
 endif
+
+ifneq ($(EXESUF),)
+.PHONY: qemu-ga
+qemu-ga: qemu-ga$(EXESUF) $(QGA_VSS_PROVIDER) $(QEMU_GA_MSI)
+endif
+
+ivshmem-client$(EXESUF): $(ivshmem-client-obj-y) libqemuutil.a libqemustub.a
+	$(call LINK, $^)
+ivshmem-server$(EXESUF): $(ivshmem-server-obj-y) libqemuutil.a libqemustub.a
+	$(call LINK, $^)
 
 clean:
 # avoid old build problems by removing potentially incorrect old files
@@ -343,6 +375,7 @@ clean:
 	if test -d $$d; then $(MAKE) -C $$d $@ || exit 1; fi; \
 	rm -f $$d/qemu-options.def; \
         done
+	rm -f $(SUBDIR_DEVICES_MAK) config-all-devices.mak
 
 VERSION ?= $(shell cat VERSION)
 
@@ -378,16 +411,16 @@ bepo    cz
 ifdef INSTALL_BLOBS
 BLOBS=bios.bin bios-256k.bin sgabios.bin vgabios.bin vgabios-cirrus.bin \
 vgabios-stdvga.bin vgabios-vmware.bin vgabios-qxl.bin vgabios-virtio.bin \
-acpi-dsdt.aml q35-acpi-dsdt.aml \
+acpi-dsdt.aml \
 ppc_rom.bin openbios-sparc32 openbios-sparc64 openbios-ppc QEMU,tcx.bin QEMU,cgthree.bin \
 pxe-e1000.rom pxe-eepro100.rom pxe-ne2k_pci.rom \
 pxe-pcnet.rom pxe-rtl8139.rom pxe-virtio.rom \
 efi-e1000.rom efi-eepro100.rom efi-ne2k_pci.rom \
 efi-pcnet.rom efi-rtl8139.rom efi-virtio.rom \
+efi-e1000e.rom efi-vmxnet3.rom \
 qemu-icon.bmp qemu_logo_no_text.svg \
 bamboo.dtb petalogix-s3adsp1800.dtb petalogix-ml605.dtb \
-multiboot.bin linuxboot.bin kvmvapic.bin \
-s390-zipl.rom \
+multiboot.bin linuxboot.bin linuxboot_dma.bin kvmvapic.bin \
 s390-ccw.img \
 spapr-rtas.bin slof.bin \
 palcode-clipper \
@@ -431,7 +464,7 @@ endif
 install: all $(if $(BUILD_DOCS),install-doc) \
 install-datadir install-localstatedir
 ifneq ($(TOOLS),)
-	$(call install-prog,$(TOOLS),$(DESTDIR)$(bindir))
+	$(call install-prog,$(subst qemu-ga,qemu-ga$(EXESUF),$(TOOLS)),$(DESTDIR)$(bindir))
 endif
 ifneq ($(CONFIG_MODULES),)
 	$(INSTALL_DIR) "$(DESTDIR)$(qemu_moddir)"
@@ -456,7 +489,7 @@ endif
 	set -e; for x in $(KEYMAPS); do \
 		$(INSTALL_DATA) $(SRC_PATH)/pc-bios/keymaps/$$x "$(DESTDIR)$(qemu_datadir)/keymaps"; \
 	done
-	$(INSTALL_DATA) $(SRC_PATH)/trace-events "$(DESTDIR)$(qemu_datadir)/trace-events"
+	$(INSTALL_DATA) $(BUILD_DIR)/trace-events-all "$(DESTDIR)$(qemu_datadir)/trace-events-all"
 	for d in $(TARGET_DIRS); do \
 	$(MAKE) $(SUBDIR_MAKEFLAGS) TARGET_DIR=$$d/ -C $$d $@ || exit 1 ; \
         done
@@ -467,12 +500,12 @@ test speed: all
 
 .PHONY: ctags
 ctags:
-	rm -f $@
+	rm -f tags
 	find "$(SRC_PATH)" -name '*.[hc]' -exec ctags --append {} +
 
 .PHONY: TAGS
 TAGS:
-	rm -f $@
+	rm -f TAGS
 	find "$(SRC_PATH)" -name '*.[hc]' -exec etags --append {} +
 
 cscope:
@@ -513,19 +546,19 @@ TEXIFLAG=$(if $(V),,--quiet)
 %.pdf: %.texi
 	$(call quiet-command,texi2pdf $(TEXIFLAG) -I . $<,"  GEN   $@")
 
-qemu-options.texi: $(SRC_PATH)/qemu-options.hx
+qemu-options.texi: $(SRC_PATH)/qemu-options.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -t < $< > $@,"  GEN   $@")
 
-qemu-monitor.texi: $(SRC_PATH)/hmp-commands.hx
+qemu-monitor.texi: $(SRC_PATH)/hmp-commands.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -t < $< > $@,"  GEN   $@")
 
-qemu-monitor-info.texi: $(SRC_PATH)/hmp-commands-info.hx
+qemu-monitor-info.texi: $(SRC_PATH)/hmp-commands-info.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -t < $< > $@,"  GEN   $@")
 
-qmp-commands.txt: $(SRC_PATH)/qmp-commands.hx
+qmp-commands.txt: $(SRC_PATH)/qmp-commands.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -q < $< > $@,"  GEN   $@")
 
-qemu-img-cmds.texi: $(SRC_PATH)/qemu-img-cmds.hx
+qemu-img-cmds.texi: $(SRC_PATH)/qemu-img-cmds.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -t < $< > $@,"  GEN   $@")
 
 qemu.1: qemu-doc.texi qemu-options.texi qemu-monitor.texi qemu-monitor-info.texi
@@ -533,8 +566,9 @@ qemu.1: qemu-doc.texi qemu-options.texi qemu-monitor.texi qemu-monitor-info.texi
 	  perl -Ww -- $(SRC_PATH)/scripts/texi2pod.pl $< qemu.pod && \
 	  $(POD2MAN) --section=1 --center=" " --release=" " qemu.pod > $@, \
 	  "  GEN   $@")
+qemu.1: qemu-option-trace.texi
 
-qemu-img.1: qemu-img.texi qemu-img-cmds.texi
+qemu-img.1: qemu-img.texi qemu-option-trace.texi qemu-img-cmds.texi
 	$(call quiet-command, \
 	  perl -Ww -- $(SRC_PATH)/scripts/texi2pod.pl $< qemu-img.pod && \
 	  $(POD2MAN) --section=1 --center=" " --release=" " qemu-img.pod > $@, \
@@ -546,7 +580,7 @@ fsdev/virtfs-proxy-helper.1: fsdev/virtfs-proxy-helper.texi
 	  $(POD2MAN) --section=1 --center=" " --release=" " fsdev/virtfs-proxy-helper.pod > $@, \
 	  "  GEN   $@")
 
-qemu-nbd.8: qemu-nbd.texi
+qemu-nbd.8: qemu-nbd.texi qemu-option-trace.texi
 	$(call quiet-command, \
 	  perl -Ww -- $(SRC_PATH)/scripts/texi2pod.pl $< qemu-nbd.pod && \
 	  $(POD2MAN) --section=8 --center=" " --release=" " qemu-nbd.pod > $@, \
@@ -558,19 +592,13 @@ qemu-ga.8: qemu-ga.texi
 	  $(POD2MAN) --section=8 --center=" " --release=" " qemu-ga.pod > $@, \
 	  "  GEN   $@")
 
-kvm_stat.1: scripts/kvm/kvm_stat.texi
-	$(call quiet-command, \
-	  perl -Ww -- $(SRC_PATH)/scripts/texi2pod.pl $< kvm_stat.pod && \
-	  $(POD2MAN) --section=1 --center=" " --release=" " kvm_stat.pod > $@, \
-	  "  GEN   $@")
-
 dvi: qemu-doc.dvi qemu-tech.dvi
 html: qemu-doc.html qemu-tech.html
 info: qemu-doc.info qemu-tech.info
 pdf: qemu-doc.pdf qemu-tech.pdf
 
 qemu-doc.dvi qemu-doc.html qemu-doc.info qemu-doc.pdf: \
-	qemu-img.texi qemu-nbd.texi qemu-options.texi \
+	qemu-img.texi qemu-nbd.texi qemu-options.texi qemu-option-trace.texi \
 	qemu-monitor.texi qemu-img-cmds.texi qemu-ga.texi \
 	qemu-monitor-info.texi
 
@@ -639,3 +667,5 @@ endif
 # Include automatically generated dependency files
 # Dependencies in Makefile.objs files come from our recursive subdir rules
 -include $(wildcard *.d tests/*.d)
+
+include $(SRC_PATH)/tests/docker/Makefile.include

@@ -18,8 +18,10 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "sysemu/sysemu.h"
 #include "qapi/qmp/types.h"
+#include "qapi/qmp/qjson.h"
 #include "monitor/monitor.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/pci/pcie.h"
@@ -94,12 +96,12 @@ static void aer_log_clear_all_err(PCIEAERLog *aer_log)
     aer_log->log_num = 0;
 }
 
-int pcie_aer_init(PCIDevice *dev, uint16_t offset)
+int pcie_aer_init(PCIDevice *dev, uint16_t offset, uint16_t size)
 {
     PCIExpressDevice *exp;
 
     pcie_add_capability(dev, PCI_EXT_CAP_ID_ERR, PCI_ERR_VER,
-                        offset, PCI_ERR_SIZEOF);
+                        offset, size);
     exp = &dev->exp;
     exp->aer_cap = offset;
 
@@ -370,7 +372,7 @@ static void pcie_aer_msg_root_port(PCIDevice *dev, const PCIEAERMsg *msg)
  *
  * Walk up the bus tree from the device, propagate the error message.
  */
-static void pcie_aer_msg(PCIDevice *dev, const PCIEAERMsg *msg)
+void pcie_aer_msg(PCIDevice *dev, const PCIEAERMsg *msg)
 {
     uint8_t type;
 
@@ -979,7 +981,7 @@ static int do_pcie_aer_inject_error(Monitor *mon,
         }
     }
     err.status = error_status;
-    err.source_id = (pci_bus_num(dev->bus) << 8) | dev->devfn;
+    err.source_id = pci_requester_id(dev);
 
     err.flags = 0;
     if (correctable) {

@@ -16,44 +16,23 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-#if !defined(__HW_SPAPR_H__)
-#error Please include spapr.h before this file!
-#endif
 
-#if !defined(__HW_SPAPR_PCI_H__)
-#define __HW_SPAPR_PCI_H__
+#ifndef PCI_HOST_SPAPR_H
+#define PCI_HOST_SPAPR_H
 
+#include "hw/ppc/spapr.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/ppc/xics.h"
 
 #define TYPE_SPAPR_PCI_HOST_BRIDGE "spapr-pci-host-bridge"
-#define TYPE_SPAPR_PCI_VFIO_HOST_BRIDGE "spapr-pci-vfio-host-bridge"
 
 #define SPAPR_PCI_HOST_BRIDGE(obj) \
     OBJECT_CHECK(sPAPRPHBState, (obj), TYPE_SPAPR_PCI_HOST_BRIDGE)
 
-#define SPAPR_PCI_VFIO_HOST_BRIDGE(obj) \
-    OBJECT_CHECK(sPAPRPHBVFIOState, (obj), TYPE_SPAPR_PCI_VFIO_HOST_BRIDGE)
+#define SPAPR_PCI_DMA_MAX_WINDOWS    2
 
-#define SPAPR_PCI_HOST_BRIDGE_CLASS(klass) \
-     OBJECT_CLASS_CHECK(sPAPRPHBClass, (klass), TYPE_SPAPR_PCI_HOST_BRIDGE)
-#define SPAPR_PCI_HOST_BRIDGE_GET_CLASS(obj) \
-     OBJECT_GET_CLASS(sPAPRPHBClass, (obj), TYPE_SPAPR_PCI_HOST_BRIDGE)
-
-typedef struct sPAPRPHBClass sPAPRPHBClass;
 typedef struct sPAPRPHBState sPAPRPHBState;
-typedef struct sPAPRPHBVFIOState sPAPRPHBVFIOState;
-
-struct sPAPRPHBClass {
-    PCIHostBridgeClass parent_class;
-
-    void (*finish_realize)(sPAPRPHBState *sphb, Error **errp);
-    int (*eeh_set_option)(sPAPRPHBState *sphb, unsigned int addr, int option);
-    int (*eeh_get_state)(sPAPRPHBState *sphb, int *state);
-    int (*eeh_reset)(sPAPRPHBState *sphb, int option);
-    int (*eeh_configure)(sPAPRPHBState *sphb);
-};
 
 typedef struct spapr_pci_msi {
     uint32_t first_irq;
@@ -77,7 +56,8 @@ struct sPAPRPHBState {
     hwaddr mem_win_addr, mem_win_size, io_win_addr, io_win_size;
     MemoryRegion memwindow, iowindow, msiwindow;
 
-    uint32_t dma_liobn;
+    uint32_t dma_liobn[SPAPR_PCI_DMA_MAX_WINDOWS];
+    hwaddr dma_win_addr, dma_win_size;
     AddressSpace iommu_as;
     MemoryRegion iommu_root;
 
@@ -91,12 +71,10 @@ struct sPAPRPHBState {
     spapr_pci_msi_mig *msi_devs;
 
     QLIST_ENTRY(sPAPRPHBState) list;
-};
 
-struct sPAPRPHBVFIOState {
-    sPAPRPHBState phb;
-
-    int32_t iommugroupid;
+    bool ddw_enabled;
+    uint64_t page_size_mask;
+    uint64_t dma64_win_addr;
 };
 
 #define SPAPR_PCI_MAX_INDEX          255
@@ -115,13 +93,11 @@ struct sPAPRPHBVFIOState {
 
 #define SPAPR_PCI_MSI_WINDOW         0x40000000000ULL
 
-#define SPAPR_PCI_DMA32_SIZE         0x40000000
-
 static inline qemu_irq spapr_phb_lsi_qirq(struct sPAPRPHBState *phb, int pin)
 {
     sPAPRMachineState *spapr = SPAPR_MACHINE(qdev_get_machine());
 
-    return xics_get_qirq(spapr->icp, phb->lsi_table[pin].irq);
+    return xics_get_qirq(spapr->xics, phb->lsi_table[pin].irq);
 }
 
 PCIHostState *spapr_create_phb(sPAPRMachineState *spapr, int index);
@@ -138,4 +114,43 @@ sPAPRPHBState *spapr_pci_find_phb(sPAPRMachineState *spapr, uint64_t buid);
 PCIDevice *spapr_pci_find_dev(sPAPRMachineState *spapr, uint64_t buid,
                               uint32_t config_addr);
 
-#endif /* __HW_SPAPR_PCI_H__ */
+/* VFIO EEH hooks */
+#ifdef CONFIG_LINUX
+bool spapr_phb_eeh_available(sPAPRPHBState *sphb);
+int spapr_phb_vfio_eeh_set_option(sPAPRPHBState *sphb,
+                                  unsigned int addr, int option);
+int spapr_phb_vfio_eeh_get_state(sPAPRPHBState *sphb, int *state);
+int spapr_phb_vfio_eeh_reset(sPAPRPHBState *sphb, int option);
+int spapr_phb_vfio_eeh_configure(sPAPRPHBState *sphb);
+void spapr_phb_vfio_reset(DeviceState *qdev);
+#else
+static inline bool spapr_phb_eeh_available(sPAPRPHBState *sphb)
+{
+    return false;
+}
+static inline int spapr_phb_vfio_eeh_set_option(sPAPRPHBState *sphb,
+                                                unsigned int addr, int option)
+{
+    return RTAS_OUT_HW_ERROR;
+}
+static inline int spapr_phb_vfio_eeh_get_state(sPAPRPHBState *sphb,
+                                               int *state)
+{
+    return RTAS_OUT_HW_ERROR;
+}
+static inline int spapr_phb_vfio_eeh_reset(sPAPRPHBState *sphb, int option)
+{
+    return RTAS_OUT_HW_ERROR;
+}
+static inline int spapr_phb_vfio_eeh_configure(sPAPRPHBState *sphb)
+{
+    return RTAS_OUT_HW_ERROR;
+}
+static inline void spapr_phb_vfio_reset(DeviceState *qdev)
+{
+}
+#endif
+
+void spapr_phb_dma_reset(sPAPRPHBState *sphb);
+
+#endif /* PCI_HOST_SPAPR_H */

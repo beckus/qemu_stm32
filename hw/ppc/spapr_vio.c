@@ -19,7 +19,10 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/hw.h"
+#include "qemu/log.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -54,12 +57,9 @@ static char *spapr_vio_get_dev_name(DeviceState *qdev)
 {
     VIOsPAPRDevice *dev = VIO_SPAPR_DEVICE(qdev);
     VIOsPAPRDeviceClass *pc = VIO_SPAPR_DEVICE_GET_CLASS(dev);
-    char *name;
 
     /* Device tree style name device@reg */
-    name = g_strdup_printf("%s@%x", pc->dt_name, dev->reg);
-
-    return name;
+    return g_strdup_printf("%s@%x", pc->dt_name, dev->reg);
 }
 
 static void spapr_vio_bus_class_init(ObjectClass *klass, void *data)
@@ -388,7 +388,7 @@ static void rtas_quiesce(PowerPCCPU *cpu, sPAPRMachineState *spapr,
 
 static VIOsPAPRDevice *reg_conflict(VIOsPAPRDevice *dev)
 {
-    VIOsPAPRBus *bus = DO_UPCAST(VIOsPAPRBus, bus, dev->qdev.parent_bus);
+    VIOsPAPRBus *bus = SPAPR_VIO_BUS(dev->qdev.parent_bus);
     BusChild *kid;
     VIOsPAPRDevice *other;
 
@@ -430,6 +430,7 @@ static void spapr_vio_busdev_realize(DeviceState *qdev, Error **errp)
     VIOsPAPRDevice *dev = (VIOsPAPRDevice *)qdev;
     VIOsPAPRDeviceClass *pc = VIO_SPAPR_DEVICE_GET_CLASS(dev);
     char *id;
+    Error *local_err = NULL;
 
     if (dev->reg != -1) {
         /*
@@ -449,7 +450,7 @@ static void spapr_vio_busdev_realize(DeviceState *qdev, Error **errp)
         }
     } else {
         /* Need to assign an address */
-        VIOsPAPRBus *bus = DO_UPCAST(VIOsPAPRBus, bus, dev->qdev.parent_bus);
+        VIOsPAPRBus *bus = SPAPR_VIO_BUS(dev->qdev.parent_bus);
 
         do {
             dev->reg = bus->next_reg++;
@@ -462,9 +463,9 @@ static void spapr_vio_busdev_realize(DeviceState *qdev, Error **errp)
         dev->qdev.id = id;
     }
 
-    dev->irq = xics_alloc(spapr->icp, 0, dev->irq, false);
-    if (!dev->irq) {
-        error_setg(errp, "can't allocate IRQ");
+    dev->irq = xics_spapr_alloc(spapr->xics, 0, dev->irq, false, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
         return;
     }
 
@@ -479,11 +480,9 @@ static void spapr_vio_busdev_realize(DeviceState *qdev, Error **errp)
         memory_region_add_subregion_overlap(&dev->mrroot, 0, &dev->mrbypass, 1);
         address_space_init(&dev->as, &dev->mrroot, qdev->id);
 
-        dev->tcet = spapr_tce_new_table(qdev, liobn,
-                                        0,
-                                        SPAPR_TCE_PAGE_SHIFT,
-                                        pc->rtce_window_size >>
-                                        SPAPR_TCE_PAGE_SHIFT, false);
+        dev->tcet = spapr_tce_new_table(qdev, liobn);
+        spapr_tce_table_enable(dev->tcet, SPAPR_TCE_PAGE_SHIFT, 0,
+                               pc->rtce_window_size >> SPAPR_TCE_PAGE_SHIFT);
         dev->tcet->vdev = dev;
         memory_region_add_subregion_overlap(&dev->mrroot, 0,
                                             spapr_tce_get_iommu(dev->tcet), 2);
@@ -523,13 +522,12 @@ VIOsPAPRBus *spapr_vio_bus_init(void)
     DeviceState *dev;
 
     /* Create bridge device */
-    dev = qdev_create(NULL, "spapr-vio-bridge");
+    dev = qdev_create(NULL, TYPE_SPAPR_VIO_BRIDGE);
     qdev_init_nofail(dev);
 
     /* Create bus on bridge device */
-
     qbus = qbus_create(TYPE_SPAPR_VIO_BUS, dev, "spapr-vio");
-    bus = DO_UPCAST(VIOsPAPRBus, bus, qbus);
+    bus = SPAPR_VIO_BUS(qbus);
     bus->next_reg = 0x71000000;
 
     /* hcall-vio */
@@ -567,9 +565,8 @@ static void spapr_vio_bridge_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo spapr_vio_bridge_info = {
-    .name          = "spapr-vio-bridge",
+    .name          = TYPE_SPAPR_VIO_BRIDGE,
     .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SysBusDevice),
     .class_init    = spapr_vio_bridge_class_init,
 };
 
@@ -583,7 +580,7 @@ const VMStateDescription vmstate_spapr_vio = {
         VMSTATE_UINT32_EQUAL(irq, VIOsPAPRDevice),
 
         /* General VIO device state */
-        VMSTATE_UINTTL(signal_state, VIOsPAPRDevice),
+        VMSTATE_UINT64(signal_state, VIOsPAPRDevice),
         VMSTATE_UINT64(crq.qladdr, VIOsPAPRDevice),
         VMSTATE_UINT32(crq.qsize, VIOsPAPRDevice),
         VMSTATE_UINT32(crq.qnext, VIOsPAPRDevice),

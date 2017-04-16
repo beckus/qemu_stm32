@@ -11,6 +11,8 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/arm/pxa.h"
 #include "hw/arm/arm.h"
@@ -19,7 +21,7 @@
 #include "hw/pcmcia.h"
 #include "hw/boards.h"
 #include "hw/i2c/i2c.h"
-#include "hw/ssi.h"
+#include "hw/ssi/ssi.h"
 #include "sysemu/block-backend.h"
 #include "hw/sysbus.h"
 #include "exec/address-spaces.h"
@@ -125,10 +127,9 @@ static uint32_t tosa_ssp_tansfer(SSISlave *dev, uint32_t value)
     return 0;
 }
 
-static int tosa_ssp_init(SSISlave *dev)
+static void tosa_ssp_realize(SSISlave *dev, Error **errp)
 {
     /* Nothing to do.  */
-    return 0;
 }
 
 #define TYPE_TOSA_DAC "tosa_dac"
@@ -254,7 +255,7 @@ static void tosa_init(MachineState *machine)
 
 static void tosapda_machine_init(MachineClass *mc)
 {
-    mc->desc = "Tosa PDA (PXA255)";
+    mc->desc = "Sharp SL-6000 (Tosa) PDA (PXA255)";
     mc->init = tosa_init;
 }
 
@@ -281,7 +282,7 @@ static void tosa_ssp_class_init(ObjectClass *klass, void *data)
 {
     SSISlaveClass *k = SSI_SLAVE_CLASS(klass);
 
-    k->init = tosa_ssp_init;
+    k->realize = tosa_ssp_realize;
     k->transfer = tosa_ssp_tansfer;
 }
 

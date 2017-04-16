@@ -1,7 +1,7 @@
 #
 # QAPI introspection generator
 #
-# Copyright (C) 2015 Red Hat, Inc.
+# Copyright (C) 2015-2016 Red Hat, Inc.
 #
 # Authors:
 #  Markus Armbruster <armbru@redhat.com>
@@ -54,7 +54,6 @@ class QAPISchemaGenIntrospectVisitor(QAPISchemaVisitor):
         self._jsons = []
         self._used_types = []
         self._name_map = {}
-        return QAPISchemaType   # don't visit types for now
 
     def visit_end(self):
         # visit the types that are actually used
@@ -82,6 +81,10 @@ const char %(c_name)s[] = %(c_string)s;
         self._used_types = None
         self._name_map = None
 
+    def visit_needed(self, entity):
+        # Ignore types on first pass; visit_end() will pick up used types
+        return not isinstance(entity, QAPISchemaType)
+
     def _name(self, name):
         if self._unmask:
             return name
@@ -104,10 +107,12 @@ const char %(c_name)s[] = %(c_string)s;
         # characters.
         if isinstance(typ, QAPISchemaBuiltinType):
             return typ.name
+        if isinstance(typ, QAPISchemaArrayType):
+            return '[' + self._use_type(typ.element_type) + ']'
         return self._name(typ.name)
 
     def _gen_json(self, name, mtype, obj):
-        if mtype != 'command' and mtype != 'event' and mtype != 'builtin':
+        if mtype not in ('command', 'event', 'builtin', 'array'):
             name = self._name(name)
         obj['name'] = name
         obj['meta-type'] = mtype
@@ -133,8 +138,8 @@ const char %(c_name)s[] = %(c_string)s;
         self._gen_json(name, 'enum', {'values': values})
 
     def visit_array_type(self, name, info, element_type):
-        self._gen_json(name, 'array',
-                       {'element-type': self._use_type(element_type)})
+        element = self._use_type(element_type)
+        self._gen_json('[' + element + ']', 'array', {'element-type': element})
 
     def visit_object_type_flat(self, name, info, members, variants):
         obj = {'members': [self._gen_member(m) for m in members]}
@@ -149,14 +154,14 @@ const char %(c_name)s[] = %(c_string)s;
                                     for m in variants.variants]})
 
     def visit_command(self, name, info, arg_type, ret_type,
-                      gen, success_response):
+                      gen, success_response, boxed):
         arg_type = arg_type or self._schema.the_empty_object_type
         ret_type = ret_type or self._schema.the_empty_object_type
         self._gen_json(name, 'command',
                        {'arg-type': self._use_type(arg_type),
                         'ret-type': self._use_type(ret_type)})
 
-    def visit_event(self, name, info, arg_type):
+    def visit_event(self, name, info, arg_type, boxed):
         arg_type = arg_type or self._schema.the_empty_object_type
         self._gen_json(name, 'event', {'arg-type': self._use_type(arg_type)})
 
@@ -199,6 +204,7 @@ h_comment = '''
                             c_comment, h_comment)
 
 fdef.write(mcgen('''
+#include "qemu/osdep.h"
 #include "%(prefix)sqmp-introspect.h"
 
 ''',

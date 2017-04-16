@@ -15,29 +15,21 @@
  * TODO: implement vectors.
  */
 
+#include "qemu/osdep.h"
 #include "hw/intc/imx_avic.h"
+#include "qemu/log.h"
 
-#define DEBUG_INT 1
-#undef DEBUG_INT /* comment out for debugging */
+#ifndef DEBUG_IMX_AVIC
+#define DEBUG_IMX_AVIC 0
+#endif
 
-#ifdef DEBUG_INT
 #define DPRINTF(fmt, args...) \
-do { printf("%s: " fmt , TYPE_IMX_AVIC, ##args); } while (0)
-#else
-#define DPRINTF(fmt, args...) do {} while (0)
-#endif
-
-/*
- * Define to 1 for messages about attempts to
- * access unimplemented registers or similar.
- */
-#define DEBUG_IMPLEMENTATION 1
-#if DEBUG_IMPLEMENTATION
-#  define IPRINTF(fmt, args...) \
-    do  { fprintf(stderr, "%s: " fmt, TYPE_IMX_AVIC, ##args); } while (0)
-#else
-#  define IPRINTF(fmt, args...) do {} while (0)
-#endif
+    do { \
+        if (DEBUG_IMX_AVIC) { \
+            fprintf(stderr, "[%s]%s: " fmt , TYPE_IMX_AVIC, \
+                                             __func__, ##args); \
+        } \
+    } while (0)
 
 static const VMStateDescription vmstate_imx_avic = {
     .name = TYPE_IMX_AVIC,
@@ -115,8 +107,8 @@ static uint64_t imx_avic_read(void *opaque,
 {
     IMXAVICState *s = (IMXAVICState *)opaque;
 
+    DPRINTF("read(offset = 0x%" HWADDR_PRIx ")\n", offset);
 
-    DPRINTF("read(offset = 0x%x)\n", offset >> 2);
     switch (offset >> 2) {
     case 0: /* INTCNTL */
         return s->intcntl;
@@ -213,7 +205,8 @@ static uint64_t imx_avic_read(void *opaque,
         return 0x4;
 
     default:
-        IPRINTF("%s: Bad offset 0x%x\n", __func__, (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_AVIC, __func__, offset);
         return 0;
     }
 }
@@ -225,13 +218,13 @@ static void imx_avic_write(void *opaque, hwaddr offset,
 
     /* Vector Registers not yet supported */
     if (offset >= 0x100 && offset <= 0x2fc) {
-        IPRINTF("%s to vector register %d ignored\n", __func__,
-                (unsigned int)((offset - 0x100) >> 2));
+        qemu_log_mask(LOG_UNIMP, "[%s]%s: vector %d ignored\n",
+                      TYPE_IMX_AVIC, __func__, (int)((offset - 0x100) >> 2));
         return;
     }
 
-    DPRINTF("%s(0x%x) = %x\n", __func__,
-            (unsigned int)offset>>2, (unsigned int)val);
+    DPRINTF("(0x%" HWADDR_PRIx ") = 0x%x\n", offset, (unsigned int)val);
+
     switch (offset >> 2) {
     case 0: /* Interrupt Control Register, INTCNTL */
         s->intcntl = val & (ABFEN | NIDIS | FIDIS | NIAD | FIAD | NM);
@@ -305,7 +298,8 @@ static void imx_avic_write(void *opaque, hwaddr offset,
         return;
 
     default:
-        IPRINTF("%s: Bad offset %x\n", __func__, (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_AVIC, __func__, offset);
     }
     imx_avic_update(s);
 }
@@ -328,28 +322,26 @@ static void imx_avic_reset(DeviceState *dev)
     memset(s->prio, 0, sizeof s->prio);
 }
 
-static int imx_avic_init(SysBusDevice *sbd)
+static void imx_avic_init(Object *obj)
 {
-    DeviceState *dev = DEVICE(sbd);
-    IMXAVICState *s = IMX_AVIC(dev);
+    DeviceState *dev = DEVICE(obj);
+    IMXAVICState *s = IMX_AVIC(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &imx_avic_ops, s,
+    memory_region_init_io(&s->iomem, obj, &imx_avic_ops, s,
                           TYPE_IMX_AVIC, 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
 
     qdev_init_gpio_in(dev, imx_avic_set_irq, IMX_AVIC_NUM_IRQS);
     sysbus_init_irq(sbd, &s->irq);
     sysbus_init_irq(sbd, &s->fiq);
-
-    return 0;
 }
 
 
 static void imx_avic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
-    k->init = imx_avic_init;
+
     dc->vmsd = &vmstate_imx_avic;
     dc->reset = imx_avic_reset;
     dc->desc = "i.MX Advanced Vector Interrupt Controller";
@@ -359,6 +351,7 @@ static const TypeInfo imx_avic_info = {
     .name = TYPE_IMX_AVIC,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(IMXAVICState),
+    .instance_init = imx_avic_init,
     .class_init = imx_avic_class_init,
 };
 

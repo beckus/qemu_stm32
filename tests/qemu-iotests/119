@@ -26,7 +26,6 @@ seq="$(basename $0)"
 echo "QA output created by $seq"
 
 here="$PWD"
-tmp=/tmp/$$
 status=1	# failure is the default!
 
 _cleanup()
@@ -49,7 +48,7 @@ echo "{'execute': 'qmp_capabilities'}
       {'execute': 'human-monitor-command',
        'arguments': {'command-line': 'qemu-io drv \"read -P 0 0 64k\"'}}
       {'execute': 'quit'}" \
-    | $QEMU -drive id=drv,if=none,file="$TEST_IMG",driver=nbd \
+    | $QEMU -nographic -drive id=drv,if=none,file="$TEST_IMG",driver=nbd \
             -qmp stdio -nodefaults \
     | _filter_qmp | _filter_qemu_io
 

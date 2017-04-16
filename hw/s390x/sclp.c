@@ -12,6 +12,8 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "cpu.h"
 #include "sysemu/kvm.h"
 #include "exec/memory.h"
@@ -355,10 +357,10 @@ static void sclp_execute(SCLPDevice *sclp, SCCB *sccb, uint32_t code)
         sclp_c->unassign_storage(sclp, sccb);
         break;
     case SCLP_CMDW_CONFIGURE_PCI:
-        s390_pci_sclp_configure(1, sccb);
+        s390_pci_sclp_configure(sccb);
         break;
     case SCLP_CMDW_DECONFIGURE_PCI:
-        s390_pci_sclp_configure(0, sccb);
+        s390_pci_sclp_deconfigure(sccb);
         break;
     default:
         efc->command_handler(ef, sccb, code);
@@ -456,29 +458,32 @@ static void sclp_realize(DeviceState *dev, Error **errp)
 {
     MachineState *machine = MACHINE(qdev_get_machine());
     SCLPDevice *sclp = SCLP(dev);
-    Error *l_err = NULL;
+    Error *err = NULL;
     uint64_t hw_limit;
     int ret;
 
     object_property_set_bool(OBJECT(sclp->event_facility), true, "realized",
-                             &l_err);
-    if (l_err) {
-        goto error;
+                             &err);
+    if (err) {
+        goto out;
     }
+    /*
+     * qdev_device_add searches the sysbus for TYPE_SCLP_EVENTS_BUS. As long
+     * as we can't find a fitting bus via the qom tree, we have to add the
+     * event facility to the sysbus, so e.g. a sclp console can be created.
+     */
+    qdev_set_parent_bus(DEVICE(sclp->event_facility), sysbus_get_default());
 
     ret = s390_set_memory_limit(machine->maxram_size, &hw_limit);
     if (ret == -E2BIG) {
-        error_setg(&l_err, "qemu: host supports a maximum of %" PRIu64 " GB",
+        error_setg(&err, "qemu: host supports a maximum of %" PRIu64 " GB",
                    hw_limit >> 30);
-        goto error;
     } else if (ret) {
-        error_setg(&l_err, "qemu: setting the guest size failed");
-        goto error;
+        error_setg(&err, "qemu: setting the guest size failed");
     }
-    return;
-error:
-    assert(l_err);
-    error_propagate(errp, l_err);
+
+out:
+    error_propagate(errp, err);
 }
 
 static void sclp_memory_init(SCLPDevice *sclp)
@@ -536,8 +541,6 @@ static void sclp_init(Object *obj)
 
     new = object_new(TYPE_SCLP_EVENT_FACILITY);
     object_property_add_child(obj, TYPE_SCLP_EVENT_FACILITY, new, NULL);
-    /* qdev_device_add searches the sysbus for TYPE_SCLP_EVENTS_BUS */
-    qdev_set_parent_bus(DEVICE(new), sysbus_get_default());
     object_unref(new);
     sclp->event_facility = EVENT_FACILITY(new);
 

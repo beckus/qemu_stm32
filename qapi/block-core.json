@@ -85,7 +85,11 @@
 { 'union': 'ImageInfoSpecific',
   'data': {
       'qcow2': 'ImageInfoSpecificQCow2',
-      'vmdk': 'ImageInfoSpecificVmdk'
+      'vmdk': 'ImageInfoSpecificVmdk',
+      # If we need to add block driver specific parameters for
+      # LUKS in future, then we'll subclass QCryptoBlockInfoLUKS
+      # to define a ImageInfoSpecificLUKS
+      'luks': 'QCryptoBlockInfoLUKS'
   } }
 
 ##
@@ -186,6 +190,33 @@
            '*fragmented-clusters': 'int', '*compressed-clusters': 'int' } }
 
 ##
+# @MapEntry:
+#
+# Mapping information from a virtual block range to a host file range
+#
+# @start: the start byte of the mapped virtual range
+#
+# @length: the number of bytes of the mapped virtual range
+#
+# @data: whether the mapped range has data
+#
+# @zero: whether the virtual blocks are zeroed
+#
+# @depth: the depth of the mapping
+#
+# @offset: #optional the offset in file that the virtual sectors are mapped to
+#
+# @filename: #optional filename that is referred to by @offset
+#
+# Since: 2.6
+#
+##
+{ 'struct': 'MapEntry',
+  'data': {'start': 'int', 'length': 'int', 'data': 'bool',
+           'zero': 'bool', 'depth': 'int', '*offset': 'int',
+           '*filename': 'str' } }
+
+##
 # @BlockdevCacheInfo
 #
 # Cache mode information for a block device
@@ -215,10 +246,12 @@
 # @drv: the name of the block format used to open the backing device. As of
 #       0.14.0 this can be: 'blkdebug', 'bochs', 'cloop', 'cow', 'dmg',
 #       'file', 'file', 'ftp', 'ftps', 'host_cdrom', 'host_device',
-#       'host_floppy', 'http', 'https', 'nbd', 'parallels', 'qcow',
+#       'http', 'https', 'luks', 'nbd', 'parallels', 'qcow',
 #       'qcow2', 'raw', 'tftp', 'vdi', 'vmdk', 'vpc', 'vvfat'
 #       2.2: 'archipelago' added, 'cow' dropped
 #       2.3: 'host_floppy' deprecated
+#       2.5: 'host_floppy' dropped
+#       2.6: 'luks' added
 #
 # @backing_file: #optional the name of the backing file (for copy-on-write)
 #
@@ -245,17 +278,41 @@
 #
 # @image: the info of image used (since: 1.6)
 #
-# @bps_max: #optional total max in bytes (Since 1.7)
+# @bps_max: #optional total throughput limit during bursts,
+#                     in bytes (Since 1.7)
 #
-# @bps_rd_max: #optional read max in bytes (Since 1.7)
+# @bps_rd_max: #optional read throughput limit during bursts,
+#                        in bytes (Since 1.7)
 #
-# @bps_wr_max: #optional write max in bytes (Since 1.7)
+# @bps_wr_max: #optional write throughput limit during bursts,
+#                        in bytes (Since 1.7)
 #
-# @iops_max: #optional total I/O operations max (Since 1.7)
+# @iops_max: #optional total I/O operations per second during bursts,
+#                      in bytes (Since 1.7)
 #
-# @iops_rd_max: #optional read I/O operations max (Since 1.7)
+# @iops_rd_max: #optional read I/O operations per second during bursts,
+#                         in bytes (Since 1.7)
 #
-# @iops_wr_max: #optional write I/O operations max (Since 1.7)
+# @iops_wr_max: #optional write I/O operations per second during bursts,
+#                         in bytes (Since 1.7)
+#
+# @bps_max_length: #optional maximum length of the @bps_max burst
+#                            period, in seconds. (Since 2.6)
+#
+# @bps_rd_max_length: #optional maximum length of the @bps_rd_max
+#                               burst period, in seconds. (Since 2.6)
+#
+# @bps_wr_max_length: #optional maximum length of the @bps_wr_max
+#                               burst period, in seconds. (Since 2.6)
+#
+# @iops_max_length: #optional maximum length of the @iops burst
+#                             period, in seconds. (Since 2.6)
+#
+# @iops_rd_max_length: #optional maximum length of the @iops_rd_max
+#                                burst period, in seconds. (Since 2.6)
+#
+# @iops_wr_max_length: #optional maximum length of the @iops_wr_max
+#                                burst period, in seconds. (Since 2.6)
 #
 # @iops_size: #optional an I/O size in bytes (Since 1.7)
 #
@@ -280,6 +337,9 @@
             '*bps_max': 'int', '*bps_rd_max': 'int',
             '*bps_wr_max': 'int', '*iops_max': 'int',
             '*iops_rd_max': 'int', '*iops_wr_max': 'int',
+            '*bps_max_length': 'int', '*bps_rd_max_length': 'int',
+            '*bps_wr_max_length': 'int', '*iops_max_length': 'int',
+            '*iops_rd_max_length': 'int', '*iops_wr_max_length': 'int',
             '*iops_size': 'int', '*group': 'str', 'cache': 'BlockdevCacheInfo',
             'write_threshold': 'int' } }
 
@@ -381,8 +441,8 @@
 # @locked: True if the guest has locked this device from having its media
 #          removed
 #
-# @tray_open: #optional True if the device has a tray and it is open
-#             (only present if removable is true)
+# @tray_open: #optional True if the device's tray is open
+#             (only present if it has a tray)
 #
 # @dirty-bitmaps: #optional dirty bitmaps information (only present if the
 #                 driver has one or more dirty bitmaps) (Since 2.0)
@@ -412,6 +472,59 @@
 # Since: 0.14.0
 ##
 { 'command': 'query-block', 'returns': ['BlockInfo'] }
+
+
+##
+# @BlockDeviceTimedStats:
+#
+# Statistics of a block device during a given interval of time.
+#
+# @interval_length: Interval used for calculating the statistics,
+#                   in seconds.
+#
+# @min_rd_latency_ns: Minimum latency of read operations in the
+#                     defined interval, in nanoseconds.
+#
+# @min_wr_latency_ns: Minimum latency of write operations in the
+#                     defined interval, in nanoseconds.
+#
+# @min_flush_latency_ns: Minimum latency of flush operations in the
+#                        defined interval, in nanoseconds.
+#
+# @max_rd_latency_ns: Maximum latency of read operations in the
+#                     defined interval, in nanoseconds.
+#
+# @max_wr_latency_ns: Maximum latency of write operations in the
+#                     defined interval, in nanoseconds.
+#
+# @max_flush_latency_ns: Maximum latency of flush operations in the
+#                        defined interval, in nanoseconds.
+#
+# @avg_rd_latency_ns: Average latency of read operations in the
+#                     defined interval, in nanoseconds.
+#
+# @avg_wr_latency_ns: Average latency of write operations in the
+#                     defined interval, in nanoseconds.
+#
+# @avg_flush_latency_ns: Average latency of flush operations in the
+#                        defined interval, in nanoseconds.
+#
+# @avg_rd_queue_depth: Average number of pending read operations
+#                      in the defined interval.
+#
+# @avg_wr_queue_depth: Average number of pending write operations
+#                      in the defined interval.
+#
+# Since: 2.5
+##
+
+{ 'struct': 'BlockDeviceTimedStats',
+  'data': { 'interval_length': 'int', 'min_rd_latency_ns': 'int',
+            'max_rd_latency_ns': 'int', 'avg_rd_latency_ns': 'int',
+            'min_wr_latency_ns': 'int', 'max_wr_latency_ns': 'int',
+            'avg_wr_latency_ns': 'int', 'min_flush_latency_ns': 'int',
+            'max_flush_latency_ns': 'int', 'avg_flush_latency_ns': 'int',
+            'avg_rd_queue_depth': 'number', 'avg_wr_queue_depth': 'number' } }
 
 ##
 # @BlockDeviceStats:
@@ -447,6 +560,37 @@
 # @wr_merged: Number of write requests that have been merged into another
 #             request (Since 2.3).
 #
+# @idle_time_ns: #optional Time since the last I/O operation, in
+#                nanoseconds. If the field is absent it means that
+#                there haven't been any operations yet (Since 2.5).
+#
+# @failed_rd_operations: The number of failed read operations
+#                        performed by the device (Since 2.5)
+#
+# @failed_wr_operations: The number of failed write operations
+#                        performed by the device (Since 2.5)
+#
+# @failed_flush_operations: The number of failed flush operations
+#                           performed by the device (Since 2.5)
+#
+# @invalid_rd_operations: The number of invalid read operations
+#                          performed by the device (Since 2.5)
+#
+# @invalid_wr_operations: The number of invalid write operations
+#                         performed by the device (Since 2.5)
+#
+# @invalid_flush_operations: The number of invalid flush operations
+#                            performed by the device (Since 2.5)
+#
+# @account_invalid: Whether invalid operations are included in the
+#                   last access statistics (Since 2.5)
+#
+# @account_failed: Whether failed operations are included in the
+#                  latency and last access statistics (Since 2.5)
+#
+# @timed_stats: Statistics specific to the set of previously defined
+#               intervals of time (Since 2.5)
+#
 # Since: 0.14.0
 ##
 { 'struct': 'BlockDeviceStats',
@@ -454,7 +598,12 @@
            'wr_operations': 'int', 'flush_operations': 'int',
            'flush_total_time_ns': 'int', 'wr_total_time_ns': 'int',
            'rd_total_time_ns': 'int', 'wr_highest_offset': 'int',
-           'rd_merged': 'int', 'wr_merged': 'int' } }
+           'rd_merged': 'int', 'wr_merged': 'int', '*idle_time_ns': 'int',
+           'failed_rd_operations': 'int', 'failed_wr_operations': 'int',
+           'failed_flush_operations': 'int', 'invalid_rd_operations': 'int',
+           'invalid_wr_operations': 'int', 'invalid_flush_operations': 'int',
+           'account_invalid': 'bool', 'account_failed': 'bool',
+           'timed_stats': ['BlockDeviceTimedStats'] } }
 
 ##
 # @BlockStats:
@@ -519,10 +668,12 @@
 # @stop: for guest operations, stop the virtual machine;
 #        for jobs, pause the job
 #
+# @auto: inherit the error handling policy of the backend (since: 2.7)
+#
 # Since: 1.3
 ##
 { 'enum': 'BlockdevOnError',
-  'data': ['report', 'ignore', 'enospc', 'stop'] }
+  'data': ['report', 'ignore', 'enospc', 'stop', 'auto'] }
 
 ##
 # @MirrorSyncMode:
@@ -568,7 +719,8 @@
 #
 # @type: the job type ('stream' for image streaming)
 #
-# @device: the block device name
+# @device: The job identifier. Originally the device name but other
+#          values are allowed since QEMU 2.7
 #
 # @len: the maximum progress value
 #
@@ -681,7 +833,7 @@
   'data': [ 'existing', 'absolute-paths' ] }
 
 ##
-# @BlockdevSnapshot
+# @BlockdevSnapshotSync
 #
 # Either @device or @node-name must be set but not both.
 #
@@ -698,13 +850,31 @@
 # @mode: #optional whether and how QEMU should create a new image, default is
 #        'absolute-paths'.
 ##
-{ 'struct': 'BlockdevSnapshot',
+{ 'struct': 'BlockdevSnapshotSync',
   'data': { '*device': 'str', '*node-name': 'str',
             'snapshot-file': 'str', '*snapshot-node-name': 'str',
             '*format': 'str', '*mode': 'NewImageMode' } }
 
 ##
+# @BlockdevSnapshot
+#
+# @node: device or node name that will have a snapshot created.
+#
+# @overlay: reference to the existing block device that will become
+#           the overlay of @node, as part of creating the snapshot.
+#           It must not have a current backing file (this can be
+#           achieved by passing "backing": "" to blockdev-add).
+#
+# Since 2.5
+##
+{ 'struct': 'BlockdevSnapshot',
+  'data': { 'node': 'str', 'overlay': 'str' } }
+
+##
 # @DriveBackup
+#
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
 #
 # @device: the name of the device which should be copied.
 #
@@ -743,8 +913,8 @@
 # Since: 1.6
 ##
 { 'struct': 'DriveBackup',
-  'data': { 'device': 'str', 'target': 'str', '*format': 'str',
-            'sync': 'MirrorSyncMode', '*mode': 'NewImageMode',
+  'data': { '*job-id': 'str', 'device': 'str', 'target': 'str',
+            '*format': 'str', 'sync': 'MirrorSyncMode', '*mode': 'NewImageMode',
             '*speed': 'int', '*bitmap': 'str',
             '*on-source-error': 'BlockdevOnError',
             '*on-target-error': 'BlockdevOnError' } }
@@ -752,9 +922,12 @@
 ##
 # @BlockdevBackup
 #
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
+#
 # @device: the name of the device which should be copied.
 #
-# @target: the name of the backup target device.
+# @target: the device name or node-name of the backup target node.
 #
 # @sync: what parts of the disk image should be copied to the destination
 #        (all the disk, only the sectors allocated in the topmost image, or
@@ -778,7 +951,7 @@
 # Since: 2.3
 ##
 { 'struct': 'BlockdevBackup',
-  'data': { 'device': 'str', 'target': 'str',
+  'data': { '*job-id': 'str', 'device': 'str', 'target': 'str',
             'sync': 'MirrorSyncMode',
             '*speed': 'int',
             '*on-source-error': 'BlockdevOnError',
@@ -789,7 +962,7 @@
 #
 # Generates a synchronous snapshot of a block device.
 #
-# For the arguments, see the documentation of BlockdevSnapshot.
+# For the arguments, see the documentation of BlockdevSnapshotSync.
 #
 # Returns: nothing on success
 #          If @device is not a valid block device, DeviceNotFound
@@ -797,6 +970,19 @@
 # Since 0.14.0
 ##
 { 'command': 'blockdev-snapshot-sync',
+  'data': 'BlockdevSnapshotSync' }
+
+
+##
+# @blockdev-snapshot
+#
+# Generates a snapshot of a block device.
+#
+# For the arguments, see the documentation of BlockdevSnapshot.
+#
+# Since 2.5
+##
+{ 'command': 'blockdev-snapshot',
   'data': 'BlockdevSnapshot' }
 
 ##
@@ -830,6 +1016,9 @@
 #
 # Live commit of data from overlay image nodes into backing nodes - i.e.,
 # writes data between 'top' and 'base' into 'base'.
+#
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
 #
 # @device:  the name of the device
 #
@@ -882,7 +1071,7 @@
 #
 ##
 { 'command': 'block-commit',
-  'data': { 'device': 'str', '*base': 'str', '*top': 'str',
+  'data': { '*job-id': 'str', 'device': 'str', '*base': 'str', '*top': 'str',
             '*backing-file': 'str', '*speed': 'int' } }
 
 ##
@@ -935,6 +1124,24 @@
 #
 # Start mirroring a block device's writes to a new destination.
 #
+# See DriveMirror for parameter descriptions
+#
+# Returns: nothing on success
+#          If @device is not a valid block device, DeviceNotFound
+#
+# Since 1.3
+##
+{ 'command': 'drive-mirror', 'boxed': true,
+  'data': 'DriveMirror' }
+
+##
+# DriveMirror
+#
+# A set of parameters describing drive mirror setup.
+#
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
+#
 # @device:  the name of the device whose writes should be mirrored.
 #
 # @target: the target of the new image. If the file exists, or if it
@@ -981,14 +1188,11 @@
 #         written. Both will result in identical contents.
 #         Default is true. (Since 2.4)
 #
-# Returns: nothing on success
-#          If @device is not a valid block device, DeviceNotFound
-#
 # Since 1.3
 ##
-{ 'command': 'drive-mirror',
-  'data': { 'device': 'str', 'target': 'str', '*format': 'str',
-            '*node-name': 'str', '*replaces': 'str',
+{ 'struct': 'DriveMirror',
+  'data': { '*job-id': 'str', 'device': 'str', 'target': 'str',
+            '*format': 'str', '*node-name': 'str', '*replaces': 'str',
             'sync': 'MirrorSyncMode', '*mode': 'NewImageMode',
             '*speed': 'int', '*granularity': 'uint32',
             '*buf-size': 'int', '*on-source-error': 'BlockdevOnError',
@@ -1066,6 +1270,57 @@
   'data': 'BlockDirtyBitmap' }
 
 ##
+# @blockdev-mirror
+#
+# Start mirroring a block device's writes to a new destination.
+#
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
+#
+# @device: the name of the device whose writes should be mirrored.
+#
+# @target: the id or node-name of the block device to mirror to. This mustn't be
+#          attached to guest.
+#
+# @replaces: #optional with sync=full graph node name to be replaced by the new
+#            image when a whole image copy is done. This can be used to repair
+#            broken Quorum files.
+#
+# @speed:  #optional the maximum speed, in bytes per second
+#
+# @sync: what parts of the disk image should be copied to the destination
+#        (all the disk, only the sectors allocated in the topmost image, or
+#        only new I/O).
+#
+# @granularity: #optional granularity of the dirty bitmap, default is 64K
+#               if the image format doesn't have clusters, 4K if the clusters
+#               are smaller than that, else the cluster size.  Must be a
+#               power of 2 between 512 and 64M
+#
+# @buf-size: #optional maximum amount of data in flight from source to
+#            target
+#
+# @on-source-error: #optional the action to take on an error on the source,
+#                   default 'report'.  'stop' and 'enospc' can only be used
+#                   if the block device supports io-status (see BlockInfo).
+#
+# @on-target-error: #optional the action to take on an error on the target,
+#                   default 'report' (no limitations, since this applies to
+#                   a different block device than @device).
+#
+# Returns: nothing on success.
+#
+# Since 2.6
+##
+{ 'command': 'blockdev-mirror',
+  'data': { '*job-id': 'str', 'device': 'str', 'target': 'str',
+            '*replaces': 'str',
+            'sync': 'MirrorSyncMode',
+            '*speed': 'int', '*granularity': 'uint32',
+            '*buf-size': 'int', '*on-source-error': 'BlockdevOnError',
+            '*on-target-error': 'BlockdevOnError' } }
+
+##
 # @block_set_io_throttle:
 #
 # Change I/O throttle limits for a block drive.
@@ -1091,6 +1346,21 @@
 # the device will be removed from its group and the rest of its
 # members will not be affected. The 'group' parameter is ignored.
 #
+# See BlockIOThrottle for parameter descriptions.
+#
+# Returns: Nothing on success
+#          If @device is not a valid block device, DeviceNotFound
+#
+# Since: 1.1
+##
+{ 'command': 'block_set_io_throttle', 'boxed': true,
+  'data': 'BlockIOThrottle' }
+
+##
+# BlockIOThrottle
+#
+# A set of parameters describing block throttling.
+#
 # @device: The name of the device
 #
 # @bps: total throughput limit in bytes per second
@@ -1101,37 +1371,73 @@
 #
 # @iops: total I/O operations per second
 #
-# @ops_rd: read I/O operations per second
+# @iops_rd: read I/O operations per second
 #
 # @iops_wr: write I/O operations per second
 #
-# @bps_max: #optional total max in bytes (Since 1.7)
+# @bps_max: #optional total throughput limit during bursts,
+#                     in bytes (Since 1.7)
 #
-# @bps_rd_max: #optional read max in bytes (Since 1.7)
+# @bps_rd_max: #optional read throughput limit during bursts,
+#                        in bytes (Since 1.7)
 #
-# @bps_wr_max: #optional write max in bytes (Since 1.7)
+# @bps_wr_max: #optional write throughput limit during bursts,
+#                        in bytes (Since 1.7)
 #
-# @iops_max: #optional total I/O operations max (Since 1.7)
+# @iops_max: #optional total I/O operations per second during bursts,
+#                      in bytes (Since 1.7)
 #
-# @iops_rd_max: #optional read I/O operations max (Since 1.7)
+# @iops_rd_max: #optional read I/O operations per second during bursts,
+#                         in bytes (Since 1.7)
 #
-# @iops_wr_max: #optional write I/O operations max (Since 1.7)
+# @iops_wr_max: #optional write I/O operations per second during bursts,
+#                         in bytes (Since 1.7)
+#
+# @bps_max_length: #optional maximum length of the @bps_max burst
+#                            period, in seconds. It must only
+#                            be set if @bps_max is set as well.
+#                            Defaults to 1. (Since 2.6)
+#
+# @bps_rd_max_length: #optional maximum length of the @bps_rd_max
+#                               burst period, in seconds. It must only
+#                               be set if @bps_rd_max is set as well.
+#                               Defaults to 1. (Since 2.6)
+#
+# @bps_wr_max_length: #optional maximum length of the @bps_wr_max
+#                               burst period, in seconds. It must only
+#                               be set if @bps_wr_max is set as well.
+#                               Defaults to 1. (Since 2.6)
+#
+# @iops_max_length: #optional maximum length of the @iops burst
+#                             period, in seconds. It must only
+#                             be set if @iops_max is set as well.
+#                             Defaults to 1. (Since 2.6)
+#
+# @iops_rd_max_length: #optional maximum length of the @iops_rd_max
+#                                burst period, in seconds. It must only
+#                                be set if @iops_rd_max is set as well.
+#                                Defaults to 1. (Since 2.6)
+#
+# @iops_wr_max_length: #optional maximum length of the @iops_wr_max
+#                                burst period, in seconds. It must only
+#                                be set if @iops_wr_max is set as well.
+#                                Defaults to 1. (Since 2.6)
 #
 # @iops_size: #optional an I/O size in bytes (Since 1.7)
 #
 # @group: #optional throttle group name (Since 2.4)
 #
-# Returns: Nothing on success
-#          If @device is not a valid block device, DeviceNotFound
-#
 # Since: 1.1
 ##
-{ 'command': 'block_set_io_throttle',
+{ 'struct': 'BlockIOThrottle',
   'data': { 'device': 'str', 'bps': 'int', 'bps_rd': 'int', 'bps_wr': 'int',
             'iops': 'int', 'iops_rd': 'int', 'iops_wr': 'int',
             '*bps_max': 'int', '*bps_rd_max': 'int',
             '*bps_wr_max': 'int', '*iops_max': 'int',
             '*iops_rd_max': 'int', '*iops_wr_max': 'int',
+            '*bps_max_length': 'int', '*bps_rd_max_length': 'int',
+            '*bps_wr_max_length': 'int', '*iops_max_length': 'int',
+            '*iops_rd_max_length': 'int', '*iops_wr_max_length': 'int',
             '*iops_size': 'int', '*group': 'str' } }
 
 ##
@@ -1152,6 +1458,9 @@
 #
 # On successful completion the image file is updated to drop the backing file
 # and the BLOCK_JOB_COMPLETED event is emitted.
+#
+# @job-id: #optional identifier for the newly-created block job. If
+#          omitted, the device name will be used. (Since 2.7)
 #
 # @device: the device name
 #
@@ -1184,8 +1493,9 @@
 # Since: 1.1
 ##
 { 'command': 'block-stream',
-  'data': { 'device': 'str', '*base': 'str', '*backing-file': 'str',
-            '*speed': 'int', '*on-error': 'BlockdevOnError' } }
+  'data': { '*job-id': 'str', 'device': 'str', '*base': 'str',
+            '*backing-file': 'str', '*speed': 'int',
+            '*on-error': 'BlockdevOnError' } }
 
 ##
 # @block-job-set-speed:
@@ -1196,7 +1506,9 @@
 #
 # Throttling can be disabled by setting the speed to 0.
 #
-# @device: the device name
+# @device: The job identifier. This used to be a device name (hence
+#          the name of the parameter), but since QEMU 2.7 it can have
+#          other values.
 #
 # @speed:  the maximum speed, in bytes per second, or 0 for unlimited.
 #          Defaults to 0.
@@ -1227,7 +1539,9 @@
 # operation can be started at a later time to finish copying all data from the
 # backing file.
 #
-# @device: the device name
+# @device: The job identifier. This used to be a device name (hence
+#          the name of the parameter), but since QEMU 2.7 it can have
+#          other values.
 #
 # @force: #optional whether to allow cancellation of a paused job (default
 #         false).  Since 1.3.
@@ -1253,7 +1567,9 @@
 # the operation is actually paused.  Cancelling a paused job automatically
 # resumes it.
 #
-# @device: the device name
+# @device: The job identifier. This used to be a device name (hence
+#          the name of the parameter), but since QEMU 2.7 it can have
+#          other values.
 #
 # Returns: Nothing on success
 #          If no background operation is active on this device, DeviceNotActive
@@ -1273,7 +1589,9 @@
 #
 # This command also clears the error status of the job.
 #
-# @device: the device name
+# @device: The job identifier. This used to be a device name (hence
+#          the name of the parameter), but since QEMU 2.7 it can have
+#          other values.
 #
 # Returns: Nothing on success
 #          If no background operation is active on this device, DeviceNotActive
@@ -1299,7 +1617,9 @@
 #
 # A cancelled or paused job cannot be completed.
 #
-# @device: the device name
+# @device: The job identifier. This used to be a device name (hence
+#          the name of the parameter), but since QEMU 2.7 it can have
+#          other values.
 #
 # Returns: Nothing on success
 #          If no background operation is active on this device, DeviceNotActive
@@ -1355,7 +1675,6 @@
 #
 # Includes cache-related options for block devices
 #
-# @writeback:   #optional enables writeback mode for any caches (default: true)
 # @direct:      #optional enables use of O_DIRECT (bypass the host page cache;
 #               default: false)
 # @no-flush:    #optional ignore any flush requests for the device (default:
@@ -1364,8 +1683,7 @@
 # Since: 1.7
 ##
 { 'struct': 'BlockdevCacheOptions',
-  'data': { '*writeback': 'bool',
-            '*direct': 'bool',
+  'data': { '*direct': 'bool',
             '*no-flush': 'bool' } }
 
 ##
@@ -1373,54 +1691,17 @@
 #
 # Drivers that are supported in block device operations.
 #
-# @host_device, @host_cdrom, @host_floppy: Since 2.1
-# @host_floppy: deprecated since 2.3
+# @host_device, @host_cdrom: Since 2.1
+# @gluster: Since 2.7
 #
 # Since: 2.0
 ##
 { 'enum': 'BlockdevDriver',
   'data': [ 'archipelago', 'blkdebug', 'blkverify', 'bochs', 'cloop',
-            'dmg', 'file', 'ftp', 'ftps', 'host_cdrom', 'host_device',
-            'host_floppy', 'http', 'https', 'null-aio', 'null-co', 'parallels',
-            'qcow', 'qcow2', 'qed', 'quorum', 'raw', 'tftp', 'vdi', 'vhdx',
-            'vmdk', 'vpc', 'vvfat' ] }
-
-##
-# @BlockdevOptionsBase
-#
-# Options that are available for all block devices, independent of the block
-# driver.
-#
-# @driver:        block driver name
-# @id:            #optional id by which the new block device can be referred to.
-#                 This is a required option on the top level of blockdev-add, and
-#                 currently not allowed on any other level.
-# @node-name:     #optional the name of a block driver state node (Since 2.0)
-# @discard:       #optional discard-related options (default: ignore)
-# @cache:         #optional cache-related options
-# @aio:           #optional AIO backend (default: threads)
-# @rerror:        #optional how to handle read errors on the device
-#                 (default: report)
-# @werror:        #optional how to handle write errors on the device
-#                 (default: enospc)
-# @read-only:     #optional whether the block device should be read-only
-#                 (default: false)
-# @detect-zeroes: #optional detect and optimize zero writes (Since 2.1)
-#                 (default: off)
-#
-# Since: 1.7
-##
-{ 'struct': 'BlockdevOptionsBase',
-  'data': { 'driver': 'BlockdevDriver',
-            '*id': 'str',
-            '*node-name': 'str',
-            '*discard': 'BlockdevDiscardOptions',
-            '*cache': 'BlockdevCacheOptions',
-            '*aio': 'BlockdevAioOptions',
-            '*rerror': 'BlockdevOnError',
-            '*werror': 'BlockdevOnError',
-            '*read-only': 'bool',
-            '*detect-zeroes': 'BlockdevDetectZeroesOptions' } }
+            'dmg', 'file', 'ftp', 'ftps', 'gluster', 'host_cdrom',
+            'host_device', 'http', 'https', 'luks', 'null-aio', 'null-co',
+            'parallels', 'qcow', 'qcow2', 'qed', 'quorum', 'raw', 'tftp',
+            'vdi', 'vhdx', 'vmdk', 'vpc', 'vvfat' ] }
 
 ##
 # @BlockdevOptionsFile
@@ -1483,6 +1764,22 @@
 ##
 { 'struct': 'BlockdevOptionsGenericFormat',
   'data': { 'file': 'BlockdevRef' } }
+
+##
+# @BlockdevOptionsLUKS
+#
+# Driver specific block device options for LUKS.
+#
+# @key-secret: #optional the ID of a QCryptoSecret object providing
+#              the decryption key (since 2.6). Mandatory except when
+#              doing a metadata-only probe of the image.
+#
+# Since: 2.6
+##
+{ 'struct': 'BlockdevOptionsLUKS',
+  'base': 'BlockdevOptionsGenericFormat',
+  'data': { '*key-secret': 'str' } }
+
 
 ##
 # @BlockdevOptionsGenericCOWFormat
@@ -1645,21 +1942,23 @@
 # @BlkdebugEvent
 #
 # Trigger events supported by blkdebug.
+#
+# Since: 2.0
 ##
-{ 'enum': 'BlkdebugEvent',
-  'data': [ 'l1_update', 'l1_grow.alloc_table', 'l1_grow.write_table',
-            'l1_grow.activate_table', 'l2_load', 'l2_update',
-            'l2_update_compressed', 'l2_alloc.cow_read', 'l2_alloc.write',
+{ 'enum': 'BlkdebugEvent', 'prefix': 'BLKDBG',
+  'data': [ 'l1_update', 'l1_grow_alloc_table', 'l1_grow_write_table',
+            'l1_grow_activate_table', 'l2_load', 'l2_update',
+            'l2_update_compressed', 'l2_alloc_cow_read', 'l2_alloc_write',
             'read_aio', 'read_backing_aio', 'read_compressed', 'write_aio',
             'write_compressed', 'vmstate_load', 'vmstate_save', 'cow_read',
             'cow_write', 'reftable_load', 'reftable_grow', 'reftable_update',
             'refblock_load', 'refblock_update', 'refblock_update_part',
-            'refblock_alloc', 'refblock_alloc.hookup', 'refblock_alloc.write',
-            'refblock_alloc.write_blocks', 'refblock_alloc.write_table',
-            'refblock_alloc.switch_table', 'cluster_alloc',
+            'refblock_alloc', 'refblock_alloc_hookup', 'refblock_alloc_write',
+            'refblock_alloc_write_blocks', 'refblock_alloc_write_table',
+            'refblock_alloc_switch_table', 'cluster_alloc',
             'cluster_alloc_bytes', 'cluster_free', 'flush_to_os',
-            'flush_to_disk', 'pwritev_rmw.head', 'pwritev_rmw.after_head',
-            'pwritev_rmw.tail', 'pwritev_rmw.after_tail', 'pwritev',
+            'flush_to_disk', 'pwritev_rmw_head', 'pwritev_rmw_after_head',
+            'pwritev_rmw_tail', 'pwritev_rmw_after_tail', 'pwritev',
             'pwritev_zero', 'pwritev_done', 'empty_image_prepare' ] }
 
 ##
@@ -1723,7 +2022,8 @@
 #
 # @config:          #optional filename of the configuration file
 #
-# @align:           #optional required alignment for requests in bytes
+# @align:           #optional required alignment for requests in bytes,
+#                   must be power of 2, or 0 for default
 #
 # @inject-error:    #optional array of error injection descriptions
 #
@@ -1794,14 +2094,98 @@
             '*read-pattern': 'QuorumReadPattern' } }
 
 ##
+# @GlusterTransport
+#
+# An enumeration of Gluster transport types
+#
+# @tcp:   TCP   - Transmission Control Protocol
+#
+# @unix:  UNIX  - Unix domain socket
+#
+# Since: 2.7
+##
+{ 'enum': 'GlusterTransport',
+  'data': [ 'unix', 'tcp' ] }
+
+
+##
+# @GlusterServer
+#
+# Captures the address of a socket
+#
+# Details for connecting to a gluster server
+#
+# @type:       Transport type used for gluster connection
+#
+# @unix:       socket file
+#
+# @tcp:        host address and port number
+#
+# Since: 2.7
+##
+{ 'union': 'GlusterServer',
+  'base': { 'type': 'GlusterTransport' },
+  'discriminator': 'type',
+  'data': { 'unix': 'UnixSocketAddress',
+            'tcp': 'InetSocketAddress' } }
+
+##
+# @BlockdevOptionsGluster
+#
+# Driver specific block device options for Gluster
+#
+# @volume:      name of gluster volume where VM image resides
+#
+# @path:        absolute path to image file in gluster volume
+#
+# @server:      gluster servers description
+#
+# @debug-level: #optional libgfapi log level (default '4' which is Error)
+#
+# Since: 2.7
+##
+{ 'struct': 'BlockdevOptionsGluster',
+  'data': { 'volume': 'str',
+            'path': 'str',
+            'server': ['GlusterServer'],
+            '*debug-level': 'int' } }
+
+##
 # @BlockdevOptions
 #
-# Options for creating a block device.
+# Options for creating a block device.  Many options are available for all
+# block devices, independent of the block driver:
+#
+# @driver:        block driver name
+# @id:            #optional id by which the new block device can be referred to.
+#                 This option is only allowed on the top level of blockdev-add.
+#                 A BlockBackend will be created by blockdev-add if and only if
+#                 this option is given.
+# @node-name:     #optional the name of a block driver state node (Since 2.0).
+#                 This option is required on the top level of blockdev-add if
+#                 the @id option is not given there.
+# @discard:       #optional discard-related options (default: ignore)
+# @cache:         #optional cache-related options
+# @aio:           #optional AIO backend (default: threads)
+# @read-only:     #optional whether the block device should be read-only
+#                 (default: false)
+# @detect-zeroes: #optional detect and optimize zero writes (Since 2.1)
+#                 (default: off)
+#
+# Remaining options are determined by the block driver.
 #
 # Since: 1.7
 ##
 { 'union': 'BlockdevOptions',
-  'base': 'BlockdevOptionsBase',
+  'base': { 'driver': 'BlockdevDriver',
+# TODO 'id' is a BB-level option, remove it
+            '*id': 'str',
+            '*node-name': 'str',
+            '*discard': 'BlockdevDiscardOptions',
+            '*cache': 'BlockdevCacheOptions',
+            '*aio': 'BlockdevAioOptions',
+            '*read-only': 'bool',
+            '*detect-zeroes': 'BlockdevDetectZeroesOptions' },
   'discriminator': 'driver',
   'data': {
       'archipelago':'BlockdevOptionsArchipelago',
@@ -1813,13 +2197,13 @@
       'file':       'BlockdevOptionsFile',
       'ftp':        'BlockdevOptionsFile',
       'ftps':       'BlockdevOptionsFile',
-# TODO gluster: Wait for structured options
+      'gluster':    'BlockdevOptionsGluster',
       'host_cdrom': 'BlockdevOptionsFile',
       'host_device':'BlockdevOptionsFile',
-      'host_floppy':'BlockdevOptionsFile',
       'http':       'BlockdevOptionsFile',
       'https':      'BlockdevOptionsFile',
 # TODO iscsi: Wait for structured options
+      'luks':       'BlockdevOptionsLUKS',
 # TODO nbd: Should take InetSocketAddress for 'host'?
 # TODO nfs: Wait for structured options
       'null-aio':   'BlockdevOptionsNull',
@@ -1860,17 +2244,178 @@
 ##
 # @blockdev-add:
 #
-# Creates a new block device.
+# Creates a new block device. If the @id option is given at the top level, a
+# BlockBackend will be created; otherwise, @node-name is mandatory at the top
+# level and no BlockBackend will be created.
 #
 # This command is still a work in progress.  It doesn't support all
-# block drivers, it lacks a matching blockdev-del, and more.  Stay
-# away from it unless you want to help with its development.
+# block drivers among other things.  Stay away from it unless you want
+# to help with its development.
 #
 # @options: block device options for the new device
 #
 # Since: 1.7
 ##
 { 'command': 'blockdev-add', 'data': { 'options': 'BlockdevOptions' } }
+
+##
+# @x-blockdev-del:
+#
+# Deletes a block device that has been added using blockdev-add.
+# The selected device can be either a block backend or a graph node.
+#
+# In the former case the backend will be destroyed, along with its
+# inserted medium if there's any. The command will fail if the backend
+# or its medium are in use.
+#
+# In the latter case the node will be destroyed. The command will fail
+# if the node is attached to a block backend or is otherwise being
+# used.
+#
+# One of @id or @node-name must be specified, but not both.
+#
+# This command is still a work in progress and is considered
+# experimental. Stay away from it unless you want to help with its
+# development.
+#
+# @id: #optional Name of the block backend device to delete.
+#
+# @node-name: #optional Name of the graph node to delete.
+#
+# Since: 2.5
+##
+{ 'command': 'x-blockdev-del', 'data': { '*id': 'str', '*node-name': 'str' } }
+
+##
+# @blockdev-open-tray:
+#
+# Opens a block device's tray. If there is a block driver state tree inserted as
+# a medium, it will become inaccessible to the guest (but it will remain
+# associated to the block device, so closing the tray will make it accessible
+# again).
+#
+# If the tray was already open before, this will be a no-op.
+#
+# Once the tray opens, a DEVICE_TRAY_MOVED event is emitted. There are cases in
+# which no such event will be generated, these include:
+# - if the guest has locked the tray, @force is false and the guest does not
+#   respond to the eject request
+# - if the BlockBackend denoted by @device does not have a guest device attached
+#   to it
+# - if the guest device does not have an actual tray
+#
+# @device: block device name
+#
+# @force:  #optional if false (the default), an eject request will be sent to
+#          the guest if it has locked the tray (and the tray will not be opened
+#          immediately); if true, the tray will be opened regardless of whether
+#          it is locked
+#
+# Since: 2.5
+##
+{ 'command': 'blockdev-open-tray',
+  'data': { 'device': 'str',
+            '*force': 'bool' } }
+
+##
+# @blockdev-close-tray:
+#
+# Closes a block device's tray. If there is a block driver state tree associated
+# with the block device (which is currently ejected), that tree will be loaded
+# as the medium.
+#
+# If the tray was already closed before, this will be a no-op.
+#
+# @device: block device name
+#
+# Since: 2.5
+##
+{ 'command': 'blockdev-close-tray',
+  'data': { 'device': 'str' } }
+
+##
+# @x-blockdev-remove-medium:
+#
+# Removes a medium (a block driver state tree) from a block device. That block
+# device's tray must currently be open (unless there is no attached guest
+# device).
+#
+# If the tray is open and there is no medium inserted, this will be a no-op.
+#
+# This command is still a work in progress and is considered experimental.
+# Stay away from it unless you want to help with its development.
+#
+# @device: block device name
+#
+# Since: 2.5
+##
+{ 'command': 'x-blockdev-remove-medium',
+  'data': { 'device': 'str' } }
+
+##
+# @x-blockdev-insert-medium:
+#
+# Inserts a medium (a block driver state tree) into a block device. That block
+# device's tray must currently be open (unless there is no attached guest
+# device) and there must be no medium inserted already.
+#
+# This command is still a work in progress and is considered experimental.
+# Stay away from it unless you want to help with its development.
+#
+# @device:    block device name
+#
+# @node-name: name of a node in the block driver state graph
+#
+# Since: 2.5
+##
+{ 'command': 'x-blockdev-insert-medium',
+  'data': { 'device': 'str',
+            'node-name': 'str'} }
+
+
+##
+# @BlockdevChangeReadOnlyMode:
+#
+# Specifies the new read-only mode of a block device subject to the
+# @blockdev-change-medium command.
+#
+# @retain:      Retains the current read-only mode
+#
+# @read-only:   Makes the device read-only
+#
+# @read-write:  Makes the device writable
+#
+# Since: 2.3
+##
+{ 'enum': 'BlockdevChangeReadOnlyMode',
+  'data': ['retain', 'read-only', 'read-write'] }
+
+
+##
+# @blockdev-change-medium:
+#
+# Changes the medium inserted into a block device by ejecting the current medium
+# and loading a new image file which is inserted as the new medium (this command
+# combines blockdev-open-tray, x-blockdev-remove-medium,
+# x-blockdev-insert-medium and blockdev-close-tray).
+#
+# @device:          block device name
+#
+# @filename:        filename of the new image to be loaded
+#
+# @format:          #optional, format to open the new image with (defaults to
+#                   the probed format)
+#
+# @read-only-mode:  #optional, change the read-only mode of the device; defaults
+#                   to 'retain'
+#
+# Since: 2.5
+##
+{ 'command': 'blockdev-change-medium',
+  'data': { 'device': 'str',
+            'filename': 'str',
+            '*format': 'str',
+            '*read-only-mode': 'BlockdevChangeReadOnlyMode' } }
 
 
 ##
@@ -1962,7 +2507,8 @@
 #
 # @type: job type
 #
-# @device: device name
+# @device: The job identifier. Originally the device name but other
+#          values are allowed since QEMU 2.7
 #
 # @len: maximum progress value
 #
@@ -1993,7 +2539,8 @@
 #
 # @type: job type
 #
-# @device: device name
+# @device: The job identifier. Originally the device name but other
+#          values are allowed since QEMU 2.7
 #
 # @len: maximum progress value
 #
@@ -2016,7 +2563,8 @@
 #
 # Emitted when a block job encounters an error
 #
-# @device: device name
+# @device: The job identifier. Originally the device name but other
+#          values are allowed since QEMU 2.7
 #
 # @operation: I/O operation
 #
@@ -2036,7 +2584,8 @@
 #
 # @type: job type
 #
-# @device: device name
+# @device: The job identifier. Originally the device name but other
+#          values are allowed since QEMU 2.7
 #
 # @len: maximum progress value
 #
@@ -2114,3 +2663,35 @@
 ##
 { 'command': 'block-set-write-threshold',
   'data': { 'node-name': 'str', 'write-threshold': 'uint64' } }
+
+##
+# @x-blockdev-change
+#
+# Dynamically reconfigure the block driver state graph. It can be used
+# to add, remove, insert or replace a graph node. Currently only the
+# Quorum driver implements this feature to add or remove its child. This
+# is useful to fix a broken quorum child.
+#
+# If @node is specified, it will be inserted under @parent. @child
+# may not be specified in this case. If both @parent and @child are
+# specified but @node is not, @child will be detached from @parent.
+#
+# @parent: the id or name of the parent node.
+#
+# @child: #optional the name of a child under the given parent node.
+#
+# @node: #optional the name of the node that will be added.
+#
+# Note: this command is experimental, and its API is not stable. It
+# does not support all kinds of operations, all kinds of children, nor
+# all block drivers.
+#
+# Warning: The data in a new quorum child MUST be consistent with that of
+# the rest of the array.
+#
+# Since: 2.7
+##
+{ 'command': 'x-blockdev-change',
+  'data' : { 'parent': 'str',
+             '*child': 'str',
+             '*node': 'str' } }

@@ -1,3 +1,4 @@
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "net/net.h"
 #include "trace.h"
@@ -82,6 +83,9 @@ static ssize_t mipsnet_receive(NetClientState *nc, const uint8_t *buf, size_t si
     if (!mipsnet_can_receive(nc))
         return 0;
 
+    if (size >= sizeof(s->rx_buffer)) {
+        return 0;
+    }
     s->busy = 1;
 
     /* Just accept everything. */
@@ -179,10 +183,12 @@ static void mipsnet_ioport_write(void *opaque, hwaddr addr,
         break;
     case MIPSNET_TX_DATA_BUFFER:
         s->tx_buffer[s->tx_written++] = val;
-        if (s->tx_written == s->tx_count) {
+        if ((s->tx_written >= MAX_ETH_FRAME_SIZE)
+            || (s->tx_written == s->tx_count)) {
             /* Send buffer. */
-            trace_mipsnet_send(s->tx_count);
-            qemu_send_packet(qemu_get_queue(s->nic), s->tx_buffer, s->tx_count);
+            trace_mipsnet_send(s->tx_written);
+            qemu_send_packet(qemu_get_queue(s->nic),
+                                s->tx_buffer, s->tx_written);
             s->tx_count = s->tx_written = 0;
             s->intctl |= MIPSNET_INTCTL_TXDONE;
             s->busy = 1;
@@ -218,7 +224,7 @@ static const VMStateDescription vmstate_mipsnet = {
 };
 
 static NetClientInfo net_mipsnet_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .receive = mipsnet_receive,
 };

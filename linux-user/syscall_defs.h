@@ -5,8 +5,7 @@
    necessary */
 
 #ifndef SYSCALL_DEFS_H
-#define SYSCALL_DEFS_H 1
-
+#define SYSCALL_DEFS_H
 
 #include "syscall_nr.h"
 
@@ -28,6 +27,8 @@
 #define SOCKOP_sendmsg          16
 #define SOCKOP_recvmsg          17
 #define SOCKOP_accept4          18
+#define SOCKOP_recvmmsg         19
+#define SOCKOP_sendmmsg         20
 
 #define IPCOP_semop		1
 #define IPCOP_semget		2
@@ -53,7 +54,8 @@
 #define TARGET_IOC_NRBITS	8
 #define TARGET_IOC_TYPEBITS	8
 
-#if defined(TARGET_I386) || (defined(TARGET_ARM) && defined(TARGET_ABI32)) \
+#if (defined(TARGET_I386) && defined(TARGET_ABI32)) \
+    || (defined(TARGET_ARM) && defined(TARGET_ABI32)) \
     || defined(TARGET_SPARC) \
     || defined(TARGET_M68K) || defined(TARGET_SH4) || defined(TARGET_CRIS)
     /* 16 bit uid wrappers emulation */
@@ -132,6 +134,24 @@ struct target_sockaddr_ll {
     uint8_t  sll_addr[8];  /* Physical layer address */
 };
 
+struct target_sockaddr_un {
+    uint16_t su_family;
+    uint8_t sun_path[108];
+};
+
+struct target_in_addr {
+    uint32_t s_addr; /* big endian */
+};
+
+struct target_sockaddr_in {
+  uint16_t sin_family;
+  int16_t sin_port; /* big endian */
+  struct target_in_addr sin_addr;
+  uint8_t __pad[sizeof(struct target_sockaddr) -
+                sizeof(uint16_t) - sizeof(int16_t) -
+                sizeof(struct target_in_addr)];
+};
+
 struct target_sock_filter {
     abi_ushort code;
     uint8_t jt;
@@ -142,10 +162,6 @@ struct target_sock_filter {
 struct target_sock_fprog {
     abi_ushort len;
     abi_ulong filter;
-};
-
-struct target_in_addr {
-    uint32_t s_addr; /* big endian */
 };
 
 struct target_ip_mreq {
@@ -670,6 +686,21 @@ typedef struct {
 
 #define TARGET_SI_PAD_SIZE ((TARGET_SI_MAX_SIZE - TARGET_SI_PREAMBLE_SIZE) / sizeof(int))
 
+/* Within QEMU the top 16 bits of si_code indicate which of the parts of
+ * the union in target_siginfo is valid. This only applies between
+ * host_to_target_siginfo_noswap() and tswap_siginfo(); it does not
+ * appear either within host siginfo_t or in target_siginfo structures
+ * which we get from the guest userspace program. (The Linux kernel
+ * does a similar thing with using the top bits for its own internal
+ * purposes but not letting them be visible to userspace.)
+ */
+#define QEMU_SI_KILL 0
+#define QEMU_SI_TIMER 1
+#define QEMU_SI_POLL 2
+#define QEMU_SI_FAULT 3
+#define QEMU_SI_CHLD 4
+#define QEMU_SI_RT 5
+
 typedef struct target_siginfo {
 #ifdef TARGET_MIPS
 	int si_signo;
@@ -954,6 +985,17 @@ struct target_pollfd {
 #define TARGET_BLKGETSIZE64 TARGET_IOR(0x12,114,abi_ulong)
                                              /* return device size in bytes
                                                 (u64 *arg) */
+
+#define TARGET_BLKDISCARD TARGET_IO(0x12, 119)
+#define TARGET_BLKIOMIN TARGET_IO(0x12, 120)
+#define TARGET_BLKIOOPT TARGET_IO(0x12, 121)
+#define TARGET_BLKALIGNOFF TARGET_IO(0x12, 122)
+#define TARGET_BLKPBSZGET TARGET_IO(0x12, 123)
+#define TARGET_BLKDISCARDZEROES TARGET_IO(0x12, 124)
+#define TARGET_BLKSECDISCARD TARGET_IO(0x12, 125)
+#define TARGET_BLKROTATIONAL TARGET_IO(0x12, 126)
+#define TARGET_BLKZEROOUT TARGET_IO(0x12, 127)
+
 #define TARGET_FIBMAP     TARGET_IO(0x00,1)  /* bmap access */
 #define TARGET_FIGETBSZ   TARGET_IO(0x00,2)  /* get the block size used for bmap */
 #define TARGET_FS_IOC_FIEMAP TARGET_IOWR('f',11,struct fiemap)
@@ -1085,6 +1127,10 @@ struct target_pollfd {
 #define TARGET_LOOP_SET_STATUS64      0x4C04
 #define TARGET_LOOP_GET_STATUS64      0x4C05
 #define TARGET_LOOP_CHANGE_FD         0x4C06
+
+#define TARGET_LOOP_CTL_ADD           0x4C80
+#define TARGET_LOOP_CTL_REMOVE        0x4C81
+#define TARGET_LOOP_CTL_GET_FREE      0x4C82
 
 /* fb ioctls */
 #define TARGET_FBIOGET_VSCREENINFO    0x4600
@@ -2148,6 +2194,8 @@ struct target_statfs64 {
 #define TARGET_F_SETLEASE (TARGET_F_LINUX_SPECIFIC_BASE + 0)
 #define TARGET_F_GETLEASE (TARGET_F_LINUX_SPECIFIC_BASE + 1)
 #define TARGET_F_DUPFD_CLOEXEC (TARGET_F_LINUX_SPECIFIC_BASE + 6)
+#define TARGET_F_SETPIPE_SZ (TARGET_F_LINUX_SPECIFIC_BASE + 7)
+#define TARGET_F_GETPIPE_SZ (TARGET_F_LINUX_SPECIFIC_BASE + 8)
 #define TARGET_F_NOTIFY  (TARGET_F_LINUX_SPECIFIC_BASE+2)
 
 #if defined(TARGET_ALPHA)
@@ -2271,34 +2319,34 @@ struct target_statfs64 {
 #endif
 
 struct target_flock {
-	short l_type;
-	short l_whence;
-	abi_ulong l_start;
-	abi_ulong l_len;
-	int l_pid;
+    short l_type;
+    short l_whence;
+    abi_long l_start;
+    abi_long l_len;
+    int l_pid;
 };
 
 struct target_flock64 {
-	short  l_type;
-	short  l_whence;
+    short  l_type;
+    short  l_whence;
 #if defined(TARGET_PPC) || defined(TARGET_X86_64) || defined(TARGET_MIPS) \
     || defined(TARGET_SPARC) || defined(TARGET_HPPA) \
     || defined(TARGET_MICROBLAZE) || defined(TARGET_TILEGX)
-        int __pad;
+    int __pad;
 #endif
-	unsigned long long l_start;
-	unsigned long long l_len;
-	int  l_pid;
+    abi_llong l_start;
+    abi_llong l_len;
+    int  l_pid;
 } QEMU_PACKED;
 
 #ifdef TARGET_ARM
 struct target_eabi_flock64 {
-	short  l_type;
-	short  l_whence;
-        int __pad;
-	unsigned long long l_start;
-	unsigned long long l_len;
-	int  l_pid;
+    short  l_type;
+    short  l_whence;
+    int __pad;
+    abi_llong l_start;
+    abi_llong l_len;
+    int  l_pid;
 } QEMU_PACKED;
 #endif
 
@@ -2514,20 +2562,23 @@ struct target_mq_attr {
 #define FUTEX_CMD_MASK          ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME)
 
 #ifdef CONFIG_EPOLL
+#if defined(TARGET_X86_64)
+#define TARGET_EPOLL_PACKED QEMU_PACKED
+#else
+#define TARGET_EPOLL_PACKED
+#endif
+
 typedef union target_epoll_data {
     abi_ulong ptr;
-    abi_ulong fd;
-    uint32_t u32;
-    uint64_t u64;
+    abi_int fd;
+    abi_uint u32;
+    abi_ullong u64;
 } target_epoll_data_t;
 
 struct target_epoll_event {
-    uint32_t events;
-#if defined(TARGET_ARM) || defined(TARGET_MIPS) || defined(TARGET_MIPS64)
-    uint32_t __pad;
-#endif
+    abi_uint events;
     target_epoll_data_t data;
-} QEMU_PACKED;
+} TARGET_EPOLL_PACKED;
 #endif
 struct target_rlimit64 {
     uint64_t rlim_cur;
@@ -2539,8 +2590,6 @@ struct target_ucred {
     uint32_t uid;
     uint32_t gid;
 };
-
-#endif
 
 typedef int32_t target_timer_t;
 
@@ -2583,3 +2632,5 @@ struct target_user_cap_data {
     uint32_t permitted;
     uint32_t inheritable;
 };
+
+#endif

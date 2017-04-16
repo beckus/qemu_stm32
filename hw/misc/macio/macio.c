@@ -22,6 +22,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/hw.h"
 #include "hw/ppc/mac.h"
 #include "hw/pci/pci.h"
@@ -105,10 +107,10 @@ static void macio_escc_legacy_setup(MacIOState *macio_state)
         0xF0, 0xE0,
     };
 
-    memory_region_init(escc_legacy, NULL, "escc-legacy", 256);
+    memory_region_init(escc_legacy, OBJECT(macio_state), "escc-legacy", 256);
     for (i = 0; i < ARRAY_SIZE(maps); i += 2) {
         MemoryRegion *port = g_new(MemoryRegion, 1);
-        memory_region_init_alias(port, NULL, "escc-legacy-port",
+        memory_region_init_alias(port, OBJECT(macio_state), "escc-legacy-port",
                                  macio_state->escc_mem, maps[i+1], 0x2);
         memory_region_add_subregion(escc_legacy, maps[i], port);
     }
@@ -131,6 +133,10 @@ static void macio_common_realize(PCIDevice *d, Error **errp)
     MacIOState *s = MACIO(d);
     SysBusDevice *sysbus_dev;
     Error *err = NULL;
+    MemoryRegion *dbdma_mem;
+
+    s->dbdma = DBDMA_init(&dbdma_mem);
+    memory_region_add_subregion(&s->bar, 0x08000, dbdma_mem);
 
     object_property_set_bool(OBJECT(&s->cuda), true, "realized", &err);
     if (err) {
@@ -248,7 +254,7 @@ static uint64_t timer_read(void *opaque, hwaddr addr, unsigned size)
     uint64_t systime = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t kltime;
 
-    kltime = muldiv64(systime, 4194300, get_ticks_per_sec() * 4);
+    kltime = muldiv64(systime, 4194300, NANOSECONDS_PER_SECOND * 4);
     kltime = muldiv64(kltime, 18432000, 1048575);
 
     switch (addr) {
@@ -328,16 +334,12 @@ static void macio_newworld_init(Object *obj)
 static void macio_instance_init(Object *obj)
 {
     MacIOState *s = MACIO(obj);
-    MemoryRegion *dbdma_mem;
 
-    memory_region_init(&s->bar, NULL, "macio", 0x80000);
+    memory_region_init(&s->bar, obj, "macio", 0x80000);
 
     object_initialize(&s->cuda, sizeof(s->cuda), TYPE_CUDA);
     qdev_set_parent_bus(DEVICE(&s->cuda), sysbus_get_default());
     object_property_add_child(obj, "cuda", OBJECT(&s->cuda), NULL);
-
-    s->dbdma = DBDMA_init(&dbdma_mem);
-    memory_region_add_subregion(&s->bar, 0x08000, dbdma_mem);
 }
 
 static const VMStateDescription vmstate_macio_oldworld = {
@@ -393,6 +395,7 @@ static void macio_class_init(ObjectClass *klass, void *data)
     k->vendor_id = PCI_VENDOR_ID_APPLE;
     k->class_id = PCI_CLASS_OTHERS << 8;
     dc->props = macio_properties;
+    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 
 static const TypeInfo macio_oldworld_type_info = {

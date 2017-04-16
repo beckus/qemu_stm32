@@ -12,11 +12,7 @@
 #ifndef BITMAP_H
 #define BITMAP_H
 
-#include <glib.h>
-#include <string.h>
-#include <stdlib.h>
 
-#include "qemu/osdep.h"
 #include "qemu/bitops.h"
 
 /*

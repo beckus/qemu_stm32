@@ -9,6 +9,7 @@
  * the COPYING file in the top-level directory.
  */
 
+#include "qemu/osdep.h"
 #include <sys/resource.h>
 #include <getopt.h>
 #include <syslog.h>
@@ -23,9 +24,9 @@
 #include "qemu-common.h"
 #include "qemu/sockets.h"
 #include "qemu/xattr.h"
-#include "virtio-9p-marshal.h"
-#include "hw/9pfs/virtio-9p-proxy.h"
-#include "fsdev/virtio-9p-marshal.h"
+#include "9p-iov-marshal.h"
+#include "hw/9pfs/9p-proxy.h"
+#include "fsdev/9p-iov-marshal.h"
 
 #define PROGNAME "virtfs-proxy-helper"
 
@@ -1128,10 +1129,19 @@ int main(int argc, char **argv)
         }
     }
 
+    if (chdir("/") < 0) {
+        do_perror("chdir");
+        goto error;
+    }
+    if (chroot(rpath) < 0) {
+        do_perror("chroot");
+        goto error;
+    }
+
     get_version = false;
 #ifdef FS_IOC_GETVERSION
     /* check whether underlying FS support IOC_GETVERSION */
-    retval = statfs(rpath, &st_fs);
+    retval = statfs("/", &st_fs);
     if (!retval) {
         switch (st_fs.f_type) {
         case EXT2_SUPER_MAGIC:
@@ -1144,16 +1154,7 @@ int main(int argc, char **argv)
     }
 #endif
 
-    if (chdir("/") < 0) {
-        do_perror("chdir");
-        goto error;
-    }
-    if (chroot(rpath) < 0) {
-        do_perror("chroot");
-        goto error;
-    }
     umask(0);
-
     if (init_capabilities() < 0) {
         goto error;
     }

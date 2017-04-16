@@ -20,6 +20,7 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/mips/cpudevs.h"
 #include "qemu/timer.h"
@@ -150,8 +151,10 @@ static void mips_timer_cb (void *opaque)
     env->CP0_Count--;
 }
 
-void cpu_mips_clock_init (CPUMIPSState *env)
+void cpu_mips_clock_init (MIPSCPU *cpu)
 {
+    CPUMIPSState *env = &cpu->env;
+
     /*
      * If we're in KVM mode, don't create the periodic timer, that is handled in
      * kernel.

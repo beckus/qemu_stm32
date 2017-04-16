@@ -22,13 +22,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/timer/m48t59.h"
+#include "qapi/error.h"
 #include "qemu/timer.h"
 #include "sysemu/sysemu.h"
 #include "hw/sysbus.h"
 #include "hw/isa/isa.h"
 #include "exec/address-spaces.h"
+#include "qemu/bcd.h"
 
 //#define DEBUG_NVRAM
 

@@ -3,7 +3,9 @@
 #ifndef COMPILER_H
 #define COMPILER_H
 
-#include "config-host.h"
+#if defined __clang_analyzer__ || defined __COVERITY__
+#define QEMU_STATIC_ANALYSIS 1
+#endif
 
 /*----------------------------------------------------------------------------
 | The macro QEMU_GNUC_PREREQ tests for minimum version of the GNU C compiler.
@@ -42,6 +44,8 @@
 # define QEMU_PACKED __attribute__((packed))
 #endif
 
+#define QEMU_ALIGNED(X) __attribute__((aligned(X)))
+
 #ifndef glue
 #define xglue(x, y) x ## y
 #define glue(x, y) xglue(x, y)
@@ -76,18 +80,6 @@
 
 #define typeof_field(type, field) typeof(((type *)0)->field)
 #define type_check(t1,t2) ((t1*)0 - (t2*)0)
-
-#ifndef always_inline
-#if !((__GNUC__ < 3) || defined(__APPLE__))
-#ifdef __OPTIMIZE__
-#undef inline
-#define inline __attribute__ (( always_inline )) __inline__
-#endif
-#endif
-#else
-#undef inline
-#define inline always_inline
-#endif
 
 #define QEMU_BUILD_BUG_ON(x) \
     typedef char glue(qemu_build_bug_on__,__LINE__)[(x)?-1:1] __attribute__((unused));

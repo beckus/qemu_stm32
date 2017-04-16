@@ -14,11 +14,11 @@
  * Contributions after 2012-01-13 are licensed under the terms of the
  * GNU GPL, version 2 or (at your option) any later version.
  */
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qemu/queue.h"
 #include "qemu/thread.h"
-#include "qemu/osdep.h"
-#include "block/coroutine.h"
+#include "qemu/coroutine.h"
 #include "trace.h"
 #include "block/thread-pool.h"
 #include "qemu/main-loop.h"
@@ -267,7 +267,7 @@ static void thread_pool_co_cb(void *opaque, int ret)
     ThreadPoolCo *co = opaque;
 
     co->ret = ret;
-    qemu_coroutine_enter(co->co, NULL);
+    qemu_coroutine_enter(co->co);
 }
 
 int coroutine_fn thread_pool_submit_co(ThreadPool *pool, ThreadPoolFunc *func,

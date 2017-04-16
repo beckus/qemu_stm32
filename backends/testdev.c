@@ -23,6 +23,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "sysemu/char.h"
 
@@ -108,7 +109,10 @@ static void testdev_close(struct CharDriverState *chr)
     g_free(testdev);
 }
 
-CharDriverState *chr_testdev_init(void)
+static CharDriverState *chr_testdev_init(const char *id,
+                                         ChardevBackend *backend,
+                                         ChardevReturn *ret,
+                                         Error **errp)
 {
     TestdevCharState *testdev;
     CharDriverState *chr;
@@ -125,7 +129,8 @@ CharDriverState *chr_testdev_init(void)
 
 static void register_types(void)
 {
-    register_char_driver("testdev", CHARDEV_BACKEND_KIND_TESTDEV, NULL);
+    register_char_driver("testdev", CHARDEV_BACKEND_KIND_TESTDEV, NULL,
+                         chr_testdev_init);
 }
 
 type_init(register_types);

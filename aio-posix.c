@@ -13,10 +13,14 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "block/block.h"
 #include "qemu/queue.h"
 #include "qemu/sockets.h"
+#ifdef CONFIG_EPOLL_CREATE1
+#include <sys/epoll.h>
+#endif
 
 struct AioHandler
 {
@@ -25,8 +29,165 @@ struct AioHandler
     IOHandler *io_write;
     int deleted;
     void *opaque;
+    bool is_external;
     QLIST_ENTRY(AioHandler) node;
 };
+
+#ifdef CONFIG_EPOLL_CREATE1
+
+/* The fd number threashold to switch to epoll */
+#define EPOLL_ENABLE_THRESHOLD 64
+
+static void aio_epoll_disable(AioContext *ctx)
+{
+    ctx->epoll_available = false;
+    if (!ctx->epoll_enabled) {
+        return;
+    }
+    ctx->epoll_enabled = false;
+    close(ctx->epollfd);
+}
+
+static inline int epoll_events_from_pfd(int pfd_events)
+{
+    return (pfd_events & G_IO_IN ? EPOLLIN : 0) |
+           (pfd_events & G_IO_OUT ? EPOLLOUT : 0) |
+           (pfd_events & G_IO_HUP ? EPOLLHUP : 0) |
+           (pfd_events & G_IO_ERR ? EPOLLERR : 0);
+}
+
+static bool aio_epoll_try_enable(AioContext *ctx)
+{
+    AioHandler *node;
+    struct epoll_event event;
+
+    QLIST_FOREACH(node, &ctx->aio_handlers, node) {
+        int r;
+        if (node->deleted || !node->pfd.events) {
+            continue;
+        }
+        event.events = epoll_events_from_pfd(node->pfd.events);
+        event.data.ptr = node;
+        r = epoll_ctl(ctx->epollfd, EPOLL_CTL_ADD, node->pfd.fd, &event);
+        if (r) {
+            return false;
+        }
+    }
+    ctx->epoll_enabled = true;
+    return true;
+}
+
+static void aio_epoll_update(AioContext *ctx, AioHandler *node, bool is_new)
+{
+    struct epoll_event event;
+    int r;
+
+    if (!ctx->epoll_enabled) {
+        return;
+    }
+    if (!node->pfd.events) {
+        r = epoll_ctl(ctx->epollfd, EPOLL_CTL_DEL, node->pfd.fd, &event);
+        if (r) {
+            aio_epoll_disable(ctx);
+        }
+    } else {
+        event.data.ptr = node;
+        event.events = epoll_events_from_pfd(node->pfd.events);
+        if (is_new) {
+            r = epoll_ctl(ctx->epollfd, EPOLL_CTL_ADD, node->pfd.fd, &event);
+            if (r) {
+                aio_epoll_disable(ctx);
+            }
+        } else {
+            r = epoll_ctl(ctx->epollfd, EPOLL_CTL_MOD, node->pfd.fd, &event);
+            if (r) {
+                aio_epoll_disable(ctx);
+            }
+        }
+    }
+}
+
+static int aio_epoll(AioContext *ctx, GPollFD *pfds,
+                     unsigned npfd, int64_t timeout)
+{
+    AioHandler *node;
+    int i, ret = 0;
+    struct epoll_event events[128];
+
+    assert(npfd == 1);
+    assert(pfds[0].fd == ctx->epollfd);
+    if (timeout > 0) {
+        ret = qemu_poll_ns(pfds, npfd, timeout);
+    }
+    if (timeout <= 0 || ret > 0) {
+        ret = epoll_wait(ctx->epollfd, events,
+                         sizeof(events) / sizeof(events[0]),
+                         timeout);
+        if (ret <= 0) {
+            goto out;
+        }
+        for (i = 0; i < ret; i++) {
+            int ev = events[i].events;
+            node = events[i].data.ptr;
+            node->pfd.revents = (ev & EPOLLIN ? G_IO_IN : 0) |
+                (ev & EPOLLOUT ? G_IO_OUT : 0) |
+                (ev & EPOLLHUP ? G_IO_HUP : 0) |
+                (ev & EPOLLERR ? G_IO_ERR : 0);
+        }
+    }
+out:
+    return ret;
+}
+
+static bool aio_epoll_enabled(AioContext *ctx)
+{
+    /* Fall back to ppoll when external clients are disabled. */
+    return !aio_external_disabled(ctx) && ctx->epoll_enabled;
+}
+
+static bool aio_epoll_check_poll(AioContext *ctx, GPollFD *pfds,
+                                 unsigned npfd, int64_t timeout)
+{
+    if (!ctx->epoll_available) {
+        return false;
+    }
+    if (aio_epoll_enabled(ctx)) {
+        return true;
+    }
+    if (npfd >= EPOLL_ENABLE_THRESHOLD) {
+        if (aio_epoll_try_enable(ctx)) {
+            return true;
+        } else {
+            aio_epoll_disable(ctx);
+        }
+    }
+    return false;
+}
+
+#else
+
+static void aio_epoll_update(AioContext *ctx, AioHandler *node, bool is_new)
+{
+}
+
+static int aio_epoll(AioContext *ctx, GPollFD *pfds,
+                     unsigned npfd, int64_t timeout)
+{
+    assert(false);
+}
+
+static bool aio_epoll_enabled(AioContext *ctx)
+{
+    return false;
+}
+
+static bool aio_epoll_check_poll(AioContext *ctx, GPollFD *pfds,
+                          unsigned npfd, int64_t timeout)
+{
+    return false;
+}
+
+#endif
 
 static AioHandler *find_aio_handler(AioContext *ctx, int fd)
 {
@@ -43,11 +204,14 @@ static AioHandler *find_aio_handler(AioContext *ctx, int fd)
 
 void aio_set_fd_handler(AioContext *ctx,
                         int fd,
+                        bool is_external,
                         IOHandler *io_read,
                         IOHandler *io_write,
                         void *opaque)
 {
     AioHandler *node;
+    bool is_new = false;
+    bool deleted = false;
 
     node = find_aio_handler(ctx, fd);
 
@@ -66,7 +230,7 @@ void aio_set_fd_handler(AioContext *ctx,
                  * releasing the walking_handlers lock.
                  */
                 QLIST_REMOVE(node, node);
-                g_free(node);
+                deleted = true;
             }
         }
     } else {
@@ -77,25 +241,32 @@ void aio_set_fd_handler(AioContext *ctx,
             QLIST_INSERT_HEAD(&ctx->aio_handlers, node, node);
 
             g_source_add_poll(&ctx->source, &node->pfd);
+            is_new = true;
         }
         /* Update handler with latest information */
         node->io_read = io_read;
         node->io_write = io_write;
         node->opaque = opaque;
+        node->is_external = is_external;
 
         node->pfd.events = (io_read ? G_IO_IN | G_IO_HUP | G_IO_ERR : 0);
         node->pfd.events |= (io_write ? G_IO_OUT | G_IO_ERR : 0);
     }
 
+    aio_epoll_update(ctx, node, is_new);
     aio_notify(ctx);
+    if (deleted) {
+        g_free(node);
+    }
 }
 
 void aio_set_event_notifier(AioContext *ctx,
                             EventNotifier *notifier,
+                            bool is_external,
                             EventNotifierHandler *io_read)
 {
     aio_set_fd_handler(ctx, event_notifier_get_fd(notifier),
-                       (IOHandler *)io_read, NULL, notifier);
+                       is_external, (IOHandler *)io_read, NULL, notifier);
 }
 
 bool aio_prepare(AioContext *ctx)
@@ -111,10 +282,12 @@ bool aio_pending(AioContext *ctx)
         int revents;
 
         revents = node->pfd.revents & node->pfd.events;
-        if (revents & (G_IO_IN | G_IO_HUP | G_IO_ERR) && node->io_read) {
+        if (revents & (G_IO_IN | G_IO_HUP | G_IO_ERR) && node->io_read &&
+            aio_node_check(ctx, node->is_external)) {
             return true;
         }
-        if (revents & (G_IO_OUT | G_IO_ERR) && node->io_write) {
+        if (revents & (G_IO_OUT | G_IO_ERR) && node->io_write &&
+            aio_node_check(ctx, node->is_external)) {
             return true;
         }
     }
@@ -152,6 +325,7 @@ bool aio_dispatch(AioContext *ctx)
 
         if (!node->deleted &&
             (revents & (G_IO_IN | G_IO_HUP | G_IO_ERR)) &&
+            aio_node_check(ctx, node->is_external) &&
             node->io_read) {
             node->io_read(node->opaque);
 
@@ -162,6 +336,7 @@ bool aio_dispatch(AioContext *ctx)
         }
         if (!node->deleted &&
             (revents & (G_IO_OUT | G_IO_ERR)) &&
+            aio_node_check(ctx, node->is_external) &&
             node->io_write) {
             node->io_write(node->opaque);
             progress = true;
@@ -257,7 +432,9 @@ bool aio_poll(AioContext *ctx, bool blocking)
 
     /* fill pollfds */
     QLIST_FOREACH(node, &ctx->aio_handlers, node) {
-        if (!node->deleted && node->pfd.events) {
+        if (!node->deleted && node->pfd.events
+            && !aio_epoll_enabled(ctx)
+            && aio_node_check(ctx, node->is_external)) {
             add_pollfd(node);
         }
     }
@@ -268,7 +445,17 @@ bool aio_poll(AioContext *ctx, bool blocking)
     if (timeout) {
         aio_context_release(ctx);
     }
-    ret = qemu_poll_ns((GPollFD *)pollfds, npfd, timeout);
+    if (aio_epoll_check_poll(ctx, pollfds, npfd, timeout)) {
+        AioHandler epoll_handler;
+
+        epoll_handler.pfd.fd = ctx->epollfd;
+        epoll_handler.pfd.events = G_IO_IN | G_IO_OUT | G_IO_HUP | G_IO_ERR;
+        npfd = 0;
+        add_pollfd(&epoll_handler);
+        ret = aio_epoll(ctx, pollfds, npfd, timeout);
+    } else  {
+        ret = qemu_poll_ns(pollfds, npfd, timeout);
+    }
     if (blocking) {
         atomic_sub(&ctx->notify_me, 2);
     }
@@ -296,4 +483,18 @@ bool aio_poll(AioContext *ctx, bool blocking)
     aio_context_release(ctx);
 
     return progress;
+}
+
+void aio_context_setup(AioContext *ctx)
+{
+#ifdef CONFIG_EPOLL_CREATE1
+    assert(!ctx->epollfd);
+    ctx->epollfd = epoll_create1(EPOLL_CLOEXEC);
+    if (ctx->epollfd == -1) {
+        fprintf(stderr, "Failed to create epoll instance: %s", strerror(errno));
+        ctx->epoll_available = false;
+    } else {
+        ctx->epoll_available = true;
+    }
+#endif
 }

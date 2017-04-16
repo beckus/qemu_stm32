@@ -3,11 +3,9 @@
 
 #include "qemu/queue.h"
 #include "qemu/option.h"
-#include "qemu/typedefs.h"
 #include "qemu/bitmap.h"
 #include "qom/object.h"
 #include "hw/irq.h"
-#include "qapi/error.h"
 #include "hw/hotplug.h"
 
 enum {
@@ -114,6 +112,19 @@ typedef struct DeviceClass {
      * TODO remove once we're there
      */
     bool cannot_instantiate_with_device_add_yet;
+    /*
+     * Does this device model survive object_unref(object_new(TNAME))?
+     * All device models should, and this flag shouldn't exist.  Some
+     * devices crash in object_new(), some crash or hang in
+     * object_unref().  Makes introspecting properties with
+     * qmp_device_list_properties() dangerous.  Bad, because it's used
+     * by -device FOO,help.  This flag serves to protect that code.
+     * It should never be set without a comment explaining why it is
+     * set.
+     * TODO remove once we're there
+     */
+    bool cannot_destroy_with_object_finalize_yet;
+
     bool hotpluggable;
 
     /* callbacks */
@@ -135,6 +146,7 @@ typedef struct NamedGPIOList NamedGPIOList;
 struct NamedGPIOList {
     char *name;
     qemu_irq *in;
+	qemu_irq *out;
     int num_in;
     int num_out;
     QLIST_ENTRY(NamedGPIOList) node;
@@ -224,9 +236,9 @@ struct BusState {
 struct Property {
     const char   *name;
     PropertyInfo *info;
-    int          offset;
+    ptrdiff_t    offset;
     uint8_t      bitnr;
-    qtype_code   qtype;
+    QType        qtype;
     int64_t      defval;
     int          arrayoffset;
     PropertyInfo *arrayinfo;
@@ -248,6 +260,11 @@ struct PropertyInfo {
  * @user_provided: Set to true if property comes from user-provided config
  * (command-line or config file).
  * @used: Set to true if property was used when initializing a device.
+ * @errp: Error destination, used like first argument of error_setg()
+ *        in case property setting fails later. If @errp is NULL, we
+ *        print warnings instead of ignoring errors silently. For
+ *        hotplugged devices, errp is always ignored and warnings are
+ *        printed instead.
  */
 typedef struct GlobalProperty {
     const char *driver;
@@ -255,7 +272,7 @@ typedef struct GlobalProperty {
     const char *value;
     bool user_provided;
     bool used;
-    QTAILQ_ENTRY(GlobalProperty) next;
+    Error **errp;
 } GlobalProperty;
 
 /*** Board API.  This should go away once we have a machine config file.  ***/
@@ -324,6 +341,7 @@ int qdev_walk_children(DeviceState *dev,
                        void *opaque);
 
 void qdev_reset_all(DeviceState *dev);
+void qdev_reset_all_fn(void *opaque);
 
 /**
  * @qbus_reset_all:

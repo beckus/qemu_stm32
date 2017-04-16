@@ -10,6 +10,7 @@
  * See the COPYING.LIB file in the top-level directory.
  */
 
+#include "qemu/osdep.h"
 #include "qapi/qmp/qint.h"
 #include "qapi/qmp/qfloat.h"
 #include "qapi/qmp/qdict.h"
@@ -18,13 +19,7 @@
 #include "qapi/qmp/qobject.h"
 #include "qemu/queue.h"
 #include "qemu-common.h"
-
-static void qdict_destroy_obj(QObject *obj);
-
-static const QType qdict_type = {
-    .code = QTYPE_QDICT,
-    .destroy = qdict_destroy_obj,
-};
+#include "qemu/cutils.h"
 
 /**
  * qdict_new(): Create a new QDict
@@ -36,7 +31,7 @@ QDict *qdict_new(void)
     QDict *qdict;
 
     qdict = g_malloc0(sizeof(*qdict));
-    QOBJECT_INIT(qdict, &qdict_type);
+    qobject_init(QOBJECT(qdict), QTYPE_QDICT);
 
     return qdict;
 }
@@ -46,9 +41,9 @@ QDict *qdict_new(void)
  */
 QDict *qobject_to_qdict(const QObject *obj)
 {
-    if (qobject_type(obj) != QTYPE_QDICT)
+    if (!obj || qobject_type(obj) != QTYPE_QDICT) {
         return NULL;
-
+    }
     return container_of(obj, QDict, base);
 }
 
@@ -184,8 +179,7 @@ size_t qdict_size(const QDict *qdict)
 /**
  * qdict_get_obj(): Get a QObject of a specific type
  */
-static QObject *qdict_get_obj(const QDict *qdict, const char *key,
-                              qtype_code type)
+static QObject *qdict_get_obj(const QDict *qdict, const char *key, QType type)
 {
     QObject *obj;
 
@@ -229,8 +223,7 @@ double qdict_get_double(const QDict *qdict, const char *key)
  */
 int64_t qdict_get_int(const QDict *qdict, const char *key)
 {
-    QObject *obj = qdict_get_obj(qdict, key, QTYPE_QINT);
-    return qint_get_int(qobject_to_qint(obj));
+    return qint_get_int(qobject_to_qint(qdict_get(qdict, key)));
 }
 
 /**
@@ -243,8 +236,7 @@ int64_t qdict_get_int(const QDict *qdict, const char *key)
  */
 bool qdict_get_bool(const QDict *qdict, const char *key)
 {
-    QObject *obj = qdict_get_obj(qdict, key, QTYPE_QBOOL);
-    return qbool_get_bool(qobject_to_qbool(obj));
+    return qbool_get_bool(qobject_to_qbool(qdict_get(qdict, key)));
 }
 
 /**
@@ -270,7 +262,7 @@ QList *qdict_get_qlist(const QDict *qdict, const char *key)
  */
 QDict *qdict_get_qdict(const QDict *qdict, const char *key)
 {
-    return qobject_to_qdict(qdict_get_obj(qdict, key, QTYPE_QDICT));
+    return qobject_to_qdict(qdict_get(qdict, key));
 }
 
 /**
@@ -284,8 +276,7 @@ QDict *qdict_get_qdict(const QDict *qdict, const char *key)
  */
 const char *qdict_get_str(const QDict *qdict, const char *key)
 {
-    QObject *obj = qdict_get_obj(qdict, key, QTYPE_QSTRING);
-    return qstring_get_str(qobject_to_qstring(obj));
+    return qstring_get_str(qobject_to_qstring(qdict_get(qdict, key)));
 }
 
 /**
@@ -298,13 +289,9 @@ const char *qdict_get_str(const QDict *qdict, const char *key)
 int64_t qdict_get_try_int(const QDict *qdict, const char *key,
                           int64_t def_value)
 {
-    QObject *obj;
+    QInt *qint = qobject_to_qint(qdict_get(qdict, key));
 
-    obj = qdict_get(qdict, key);
-    if (!obj || qobject_type(obj) != QTYPE_QINT)
-        return def_value;
-
-    return qint_get_int(qobject_to_qint(obj));
+    return qint ? qint_get_int(qint) : def_value;
 }
 
 /**
@@ -316,13 +303,9 @@ int64_t qdict_get_try_int(const QDict *qdict, const char *key,
  */
 bool qdict_get_try_bool(const QDict *qdict, const char *key, bool def_value)
 {
-    QObject *obj;
+    QBool *qbool = qobject_to_qbool(qdict_get(qdict, key));
 
-    obj = qdict_get(qdict, key);
-    if (!obj || qobject_type(obj) != QTYPE_QBOOL)
-        return def_value;
-
-    return qbool_get_bool(qobject_to_qbool(obj));
+    return qbool ? qbool_get_bool(qbool) : def_value;
 }
 
 /**
@@ -335,13 +318,9 @@ bool qdict_get_try_bool(const QDict *qdict, const char *key, bool def_value)
  */
 const char *qdict_get_try_str(const QDict *qdict, const char *key)
 {
-    QObject *obj;
+    QString *qstr = qobject_to_qstring(qdict_get(qdict, key));
 
-    obj = qdict_get(qdict, key);
-    if (!obj || qobject_type(obj) != QTYPE_QSTRING)
-        return NULL;
-
-    return qstring_get_str(qobject_to_qstring(obj));
+    return qstr ? qstring_get_str(qstr) : NULL;
 }
 
 /**
@@ -456,7 +435,7 @@ void qdict_del(QDict *qdict, const char *key)
 /**
  * qdict_destroy_obj(): Free all the memory allocated by a QDict
  */
-static void qdict_destroy_obj(QObject *obj)
+void qdict_destroy_obj(QObject *obj)
 {
     int i;
     QDict *qdict;
@@ -726,19 +705,16 @@ int qdict_array_entries(QDict *src, const char *subqdict)
     for (i = 0; i < INT_MAX; i++) {
         QObject *subqobj;
         int subqdict_entries;
-        size_t slen = 32 + subqdict_len;
-        char indexstr[slen], prefix[slen];
-        size_t snprintf_ret;
-
-        snprintf_ret = snprintf(indexstr, slen, "%s%u", subqdict, i);
-        assert(snprintf_ret < slen);
-
-        subqobj = qdict_get(src, indexstr);
-
-        snprintf_ret = snprintf(prefix, slen, "%s%u.", subqdict, i);
-        assert(snprintf_ret < slen);
+        char *prefix = g_strdup_printf("%s%u.", subqdict, i);
 
         subqdict_entries = qdict_count_prefixed_entries(src, prefix);
+
+        /* Remove ending "." */
+        prefix[strlen(prefix) - 1] = 0;
+        subqobj = qdict_get(src, prefix);
+
+        g_free(prefix);
+
         if (subqdict_entries < 0) {
             return subqdict_entries;
         }

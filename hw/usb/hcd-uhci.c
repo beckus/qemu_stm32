@@ -25,10 +25,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/usb.h"
 #include "hw/usb/uhci-regs.h"
 #include "hw/pci/pci.h"
+#include "qapi/error.h"
 #include "qemu/timer.h"
 #include "qemu/iov.h"
 #include "sysemu/dma.h"
@@ -401,7 +403,7 @@ static int uhci_post_load(void *opaque, int version_id)
 
     if (version_id < 2) {
         s->expire_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-            (get_ticks_per_sec() / FRAME_TIMER_FREQ);
+            (NANOSECONDS_PER_SECOND / FRAME_TIMER_FREQ);
     }
     return 0;
 }
@@ -443,7 +445,7 @@ static void uhci_port_write(void *opaque, hwaddr addr,
             /* start frame processing */
             trace_usb_uhci_schedule_start();
             s->expire_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                (get_ticks_per_sec() / FRAME_TIMER_FREQ);
+                (NANOSECONDS_PER_SECOND / FRAME_TIMER_FREQ);
             timer_mod(s->frame_timer, s->expire_time);
             s->status &= ~UHCI_STS_HCHALTED;
         } else if (!(val & UHCI_CMD_RS)) {
@@ -772,8 +774,9 @@ static int uhci_handle_td(UHCIState *s, UHCIQueue *q, uint32_t qh_addr,
     bool spd;
     bool queuing = (q != NULL);
     uint8_t pid = td->token & 0xff;
-    UHCIAsync *async = uhci_async_find_td(s, td_addr);
+    UHCIAsync *async;
 
+    async = uhci_async_find_td(s, td_addr);
     if (async) {
         if (uhci_queue_verify(async->queue, qh_addr, td, td_addr, queuing)) {
             assert(q == NULL || q == async->queue);
@@ -810,6 +813,19 @@ static int uhci_handle_td(UHCIState *s, UHCIQueue *q, uint32_t qh_addr,
                 *int_mask |= 0x01;
         }
         return TD_RESULT_NEXT_QH;
+    }
+
+    switch (pid) {
+    case USB_TOKEN_OUT:
+    case USB_TOKEN_SETUP:
+    case USB_TOKEN_IN:
+        break;
+    default:
+        /* invalid pid : frame interrupted */
+        s->status |= UHCI_STS_HCPERR;
+        s->cmd &= ~UHCI_CMD_RS;
+        uhci_update_irq(s);
+        return TD_RESULT_STOP_FRAME;
     }
 
     if (async) {
@@ -879,11 +895,7 @@ static int uhci_handle_td(UHCIState *s, UHCIQueue *q, uint32_t qh_addr,
         break;
 
     default:
-        /* invalid pid : frame interrupted */
-        uhci_async_free(async);
-        s->status |= UHCI_STS_HCPERR;
-        uhci_update_irq(s);
-        return TD_RESULT_STOP_FRAME;
+        abort(); /* Never to execute */
     }
 
     if (async->packet.status == USB_RET_ASYNC) {
@@ -1119,7 +1131,7 @@ static void uhci_frame_timer(void *opaque)
     UHCIState *s = opaque;
     uint64_t t_now, t_last_run;
     int i, frames;
-    const uint64_t frame_t = get_ticks_per_sec() / FRAME_TIMER_FREQ;
+    const uint64_t frame_t = NANOSECONDS_PER_SECOND / FRAME_TIMER_FREQ;
 
     s->completions_only = false;
     qemu_bh_cancel(s->bh);

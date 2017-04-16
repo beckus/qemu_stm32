@@ -17,6 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/pci/pci.h"
 #include "hw/i386/pc.h"
 #include "hw/timer/i8254.h"
@@ -75,7 +76,10 @@ static void i82378_realize(PCIDevice *pci, Error **errp)
     pci_config_set_interrupt_pin(pci_conf, 1); /* interrupt pin 0 */
 
     isabus = isa_bus_new(dev, get_system_memory(),
-                         pci_address_space_io(pci));
+                         pci_address_space_io(pci), errp);
+    if (!isabus) {
+        return;
+    }
 
     /* This device has:
        2 82C59 (irq)

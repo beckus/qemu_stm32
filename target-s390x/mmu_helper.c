@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "exec/address-spaces.h"
 #include "cpu.h"
@@ -30,7 +31,7 @@
 #ifdef DEBUG_S390_STDOUT
 #define DPRINTF(fmt, ...) \
     do { fprintf(stderr, fmt, ## __VA_ARGS__); \
-         qemu_log(fmt, ##__VA_ARGS__); } while (0)
+         if (qemu_log_separate()) qemu_log(fmt, ##__VA_ARGS__); } while (0)
 #else
 #define DPRINTF(fmt, ...) \
     do { qemu_log(fmt, ## __VA_ARGS__); } while (0)
@@ -89,7 +90,7 @@ static void trigger_page_fault(CPUS390XState *env, target_ulong vaddr,
 
     tec = vaddr | (rw == MMU_DATA_STORE ? FS_WRITE : FS_READ) | asc >> 46;
 
-    DPRINTF("%s: vaddr=%016" PRIx64 " bits=%d\n", __func__, vaddr, bits);
+    DPRINTF("%s: trans_exc_code=%016" PRIx64 "\n", __func__, tec);
 
     if (!exc) {
         return;

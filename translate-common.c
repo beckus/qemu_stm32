@@ -17,11 +17,13 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qom/cpu.h"
+#include "sysemu/cpus.h"
 
 uintptr_t qemu_real_host_page_size;
-uintptr_t qemu_real_host_page_mask;
+intptr_t qemu_real_host_page_mask;
 
 #ifndef CONFIG_USER_ONLY
 /* mask must never be zero, except for A20 change call */

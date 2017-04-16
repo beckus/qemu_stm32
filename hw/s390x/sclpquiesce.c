@@ -11,7 +11,8 @@
  * option) any later version.  See the COPYING file in the top-level directory.
  *
  */
-#include <hw/qdev.h>
+#include "qemu/osdep.h"
+#include "hw/qdev.h"
 #include "sysemu/sysemu.h"
 #include "hw/s390x/sclp.h"
 #include "hw/s390x/event-facility.h"

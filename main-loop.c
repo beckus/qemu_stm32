@@ -22,7 +22,9 @@
  * THE SOFTWARE.
  */
 
-#include "qemu-common.h"
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu/cutils.h"
 #include "qemu/timer.h"
 #include "qemu/sockets.h"	// struct in_addr needed for libslirp.h
 #include "sysemu/qtest.h"
@@ -152,11 +154,11 @@ int qemu_init_main_loop(Error **errp)
     }
 
     qemu_aio_context = aio_context_new(&local_error);
-    qemu_notify_bh = qemu_bh_new(notify_event_cb, NULL);
     if (!qemu_aio_context) {
         error_propagate(errp, local_error);
         return -EMFILE;
     }
+    qemu_notify_bh = qemu_bh_new(notify_event_cb, NULL);
     gpollfds = g_array_new(FALSE, FALSE, sizeof(GPollFD));
     src = aio_get_g_source(qemu_aio_context);
     g_source_attach(src, NULL);
@@ -230,7 +232,7 @@ static int os_host_main_loop_wait(int64_t timeout)
     if (!timeout && (spin_counter > MAX_MAIN_LOOP_SPIN)) {
         static bool notified;
 
-        if (!notified && !qtest_enabled()) {
+        if (!notified && !qtest_driver()) {
             fprintf(stderr,
                     "main-loop: WARNING: I/O thread spun for %d iterations\n",
                     MAX_MAIN_LOOP_SPIN);
@@ -506,6 +508,9 @@ int main_loop_wait(int nonblocking)
     slirp_pollfds_poll(gpollfds, (ret < 0));
 #endif
 
+    /* CPU thread can infinitely wait for event after
+       missing the warp */
+    qemu_start_warp_timer();
     qemu_clock_run_all_timers();
 
     return ret;

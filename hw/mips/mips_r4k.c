@@ -7,6 +7,10 @@
  * All peripherial devices are attached to this "bus" with
  * the standard PC ISA addresses.
 */
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "hw/mips/mips.h"
 #include "hw/mips/cpudevs.h"
@@ -87,7 +91,7 @@ static int64_t load_kernel(void)
     kernel_size = load_elf(loaderparams.kernel_filename, cpu_mips_kseg0_to_phys,
                            NULL, (uint64_t *)&entry, NULL,
                            (uint64_t *)&kernel_high, big_endian,
-                           EM_MIPS, 1);
+                           EM_MIPS, 1, 0);
     if (kernel_size >= 0) {
         if ((entry & ~0x7fffffffULL) == 0x80000000)
             entry = (int32_t)entry;
@@ -263,8 +267,8 @@ void mips_r4k_init(MachineState *machine)
     }
 
     /* Init CPU internal devices */
-    cpu_mips_irq_init_cpu(env);
-    cpu_mips_clock_init(env);
+    cpu_mips_irq_init_cpu(cpu);
+    cpu_mips_clock_init(cpu);
 
     /* ISA bus: IO space at 0x14000000, mem space at 0x10000000 */
     memory_region_init_alias(isa_io, NULL, "isa-io",
@@ -272,7 +276,7 @@ void mips_r4k_init(MachineState *machine)
     memory_region_init(isa_mem, NULL, "isa-mem", 0x01000000);
     memory_region_add_subregion(get_system_memory(), 0x14000000, isa_io);
     memory_region_add_subregion(get_system_memory(), 0x10000000, isa_mem);
-    isa_bus = isa_bus_new(NULL, isa_mem, get_system_io());
+    isa_bus = isa_bus_new(NULL, isa_mem, get_system_io(), &error_abort);
 
     /* The PIC is attached to the MIPS CPU INT0 pin */
     i8259 = i8259_init(isa_bus, env->irq[2]);

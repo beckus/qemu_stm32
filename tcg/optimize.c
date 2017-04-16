@@ -23,12 +23,9 @@
  * THE SOFTWARE.
  */
 
-#include "config.h"
-
-#include <stdlib.h>
-#include <stdio.h>
-
+#include "qemu/osdep.h"
 #include "qemu-common.h"
+#include "exec/cpu-common.h"
 #include "tcg-op.h"
 
 #define CASE_OP_32_64(x)                        \
@@ -83,37 +80,6 @@ static void init_temp_info(TCGArg temp)
         temps[temp].mask = -1;
         set_bit(temp, temps_used.l);
     }
-}
-
-static TCGOp *insert_op_before(TCGContext *s, TCGOp *old_op,
-                                TCGOpcode opc, int nargs)
-{
-    int oi = s->gen_next_op_idx;
-    int pi = s->gen_next_parm_idx;
-    int prev = old_op->prev;
-    int next = old_op - s->gen_op_buf;
-    TCGOp *new_op;
-
-    tcg_debug_assert(oi < OPC_BUF_SIZE);
-    tcg_debug_assert(pi + nargs <= OPPARAM_BUF_SIZE);
-    s->gen_next_op_idx = oi + 1;
-    s->gen_next_parm_idx = pi + nargs;
-
-    new_op = &s->gen_op_buf[oi];
-    *new_op = (TCGOp){
-        .opc = opc,
-        .args = pi,
-        .prev = prev,
-        .next = next
-    };
-    if (prev >= 0) {
-        s->gen_op_buf[prev].next = oi;
-    } else {
-        s->gen_first_op_idx = oi;
-    }
-    old_op->prev = oi;
-
-    return new_op;
 }
 
 static int op_bits(TCGOpcode op)
@@ -586,7 +552,7 @@ void tcg_optimize(TCGContext *s)
     nb_globals = s->nb_globals;
     reset_all_temps(nb_temps);
 
-    for (oi = s->gen_first_op_idx; oi >= 0; oi = oi_next) {
+    for (oi = s->gen_op_buf[0].next; oi != 0; oi = oi_next) {
         tcg_target_ulong mask, partmask, affected;
         int nb_oargs, nb_iargs, i;
         TCGArg tmp;
@@ -961,12 +927,12 @@ void tcg_optimize(TCGContext *s)
         }
 
         if (partmask == 0) {
-            assert(nb_oargs == 1);
+            tcg_debug_assert(nb_oargs == 1);
             tcg_opt_gen_movi(s, op, args, args[0], 0);
             continue;
         }
         if (affected == 0) {
-            assert(nb_oargs == 1);
+            tcg_debug_assert(nb_oargs == 1);
             tcg_opt_gen_mov(s, op, args, args[0], args[1]);
             continue;
         }
@@ -1123,7 +1089,7 @@ void tcg_optimize(TCGContext *s)
                 uint64_t a = ((uint64_t)ah << 32) | al;
                 uint64_t b = ((uint64_t)bh << 32) | bl;
                 TCGArg rl, rh;
-                TCGOp *op2 = insert_op_before(s, op, INDEX_op_movi_i32, 2);
+                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32, 2);
                 TCGArg *args2 = &s->gen_opparam_buf[op2->args];
 
                 if (opc == INDEX_op_add2_i32) {
@@ -1149,7 +1115,7 @@ void tcg_optimize(TCGContext *s)
                 uint32_t b = temps[args[3]].val;
                 uint64_t r = (uint64_t)a * b;
                 TCGArg rl, rh;
-                TCGOp *op2 = insert_op_before(s, op, INDEX_op_movi_i32, 2);
+                TCGOp *op2 = tcg_op_insert_before(s, op, INDEX_op_movi_i32, 2);
                 TCGArg *args2 = &s->gen_opparam_buf[op2->args];
 
                 rl = args[0];

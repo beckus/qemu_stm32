@@ -10,6 +10,7 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "ui/console.h"
 #include "hw/arm/pxa.h"
@@ -309,10 +310,10 @@ static void pxa2xx_descriptor_load(PXA2xxLCDState *s)
         }
 
         cpu_physical_memory_read(descptr, &desc, sizeof(desc));
-        s->dma_ch[i].descriptor = tswap32(desc.fdaddr);
-        s->dma_ch[i].source = tswap32(desc.fsaddr);
-        s->dma_ch[i].id = tswap32(desc.fidr);
-        s->dma_ch[i].command = tswap32(desc.ldcmd);
+        s->dma_ch[i].descriptor = le32_to_cpu(desc.fdaddr);
+        s->dma_ch[i].source = le32_to_cpu(desc.fsaddr);
+        s->dma_ch[i].id = le32_to_cpu(desc.fidr);
+        s->dma_ch[i].command = le32_to_cpu(desc.ldcmd);
     }
 }
 

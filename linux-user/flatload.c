@@ -33,16 +33,11 @@
 
 /****************************************************************************/
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <sys/mman.h>
-#include <unistd.h>
+#include "qemu/osdep.h"
 
 #include "qemu.h"
 #include "flat.h"
-#define ntohl(x) be32_to_cpu(x)
-#include <target_flat.h>
+#include "target_flat.h"
 
 //#define DEBUG
 

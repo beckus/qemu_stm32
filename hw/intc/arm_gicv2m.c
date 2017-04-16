@@ -25,8 +25,12 @@
  * identification registers and with a single non-secure MSI register frame.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "hw/pci/msi.h"
+#include "sysemu/kvm.h"
+#include "qemu/log.h"
 
 #define TYPE_ARM_GICV2M "arm-gicv2m"
 #define ARM_GICV2M(obj) OBJECT_CHECK(ARMGICv2mState, (obj), TYPE_ARM_GICV2M)
@@ -147,7 +151,7 @@ static void gicv2m_realize(DeviceState *dev, Error **errp)
         sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->spi[i]);
     }
 
-    msi_supported = true;
+    msi_nonbroken = true;
     kvm_gsi_direct_mapping = true;
     kvm_msi_via_irqfd_allowed = kvm_irqfds_enabled();
 }

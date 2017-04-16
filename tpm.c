@@ -11,7 +11,7 @@
  *
  * Based on net.c
  */
-#include "config-host.h"
+#include "qemu/osdep.h"
 
 #include "qapi/qmp/qerror.h"
 #include "sysemu/tpm_backend.h"
@@ -32,7 +32,7 @@ static TPMDriverOps const *be_drivers[TPM_MAX_DRIVERS] = {
 };
 
 static enum TpmModel tpm_models[TPM_MAX_MODELS] = {
-    TPM_MODEL_MAX,
+    TPM_MODEL__MAX,
 };
 
 int tpm_register_model(enum TpmModel model)
@@ -40,7 +40,7 @@ int tpm_register_model(enum TpmModel model)
     int i;
 
     for (i = 0; i < TPM_MAX_MODELS; i++) {
-        if (tpm_models[i] == TPM_MODEL_MAX) {
+        if (tpm_models[i] == TPM_MODEL__MAX) {
             tpm_models[i] = model;
             return 0;
         }
@@ -260,9 +260,9 @@ static TPMInfo *qmp_query_tpm_inst(TPMBackend *drv)
 
     switch (drv->ops->type) {
     case TPM_TYPE_PASSTHROUGH:
-        res->options->kind = TPM_TYPE_OPTIONS_KIND_PASSTHROUGH;
+        res->options->type = TPM_TYPE_OPTIONS_KIND_PASSTHROUGH;
         tpo = g_new0(TPMPassthroughOptions, 1);
-        res->options->passthrough = tpo;
+        res->options->u.passthrough.data = tpo;
         if (drv->path) {
             tpo->path = g_strdup(drv->path);
             tpo->has_path = true;
@@ -272,7 +272,7 @@ static TPMInfo *qmp_query_tpm_inst(TPMBackend *drv)
             tpo->has_cancel_path = true;
         }
         break;
-    case TPM_TYPE_MAX:
+    case TPM_TYPE__MAX:
         break;
     }
 
@@ -311,7 +311,7 @@ TpmTypeList *qmp_query_tpm_types(Error **errp)
     unsigned int i = 0;
     TpmTypeList *head = NULL, *prev = NULL, *cur_item;
 
-    for (i = 0; i < TPM_TYPE_MAX; i++) {
+    for (i = 0; i < TPM_TYPE__MAX; i++) {
         if (!tpm_driver_find_by_type(i)) {
             continue;
         }
@@ -335,7 +335,7 @@ TpmModelList *qmp_query_tpm_models(Error **errp)
     unsigned int i = 0;
     TpmModelList *head = NULL, *prev = NULL, *cur_item;
 
-    for (i = 0; i < TPM_MODEL_MAX; i++) {
+    for (i = 0; i < TPM_MODEL__MAX; i++) {
         if (!tpm_model_is_registered(i)) {
             continue;
         }

@@ -18,10 +18,14 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "cpu.h"
 #include "exec/gdbstub.h"
 #include "qemu/timer.h"
+#include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
+#include "hw/s390x/ioinst.h"
 #ifndef CONFIG_USER_ONLY
 #include "sysemu/sysemu.h"
 #endif
@@ -33,7 +37,7 @@
 #ifdef DEBUG_S390_STDOUT
 #define DPRINTF(fmt, ...) \
     do { fprintf(stderr, fmt, ## __VA_ARGS__); \
-         qemu_log(fmt, ##__VA_ARGS__); } while (0)
+         if (qemu_log_separate()) qemu_log(fmt, ##__VA_ARGS__); } while (0)
 #else
 #define DPRINTF(fmt, ...) \
     do { qemu_log(fmt, ## __VA_ARGS__); } while (0)
@@ -64,14 +68,47 @@ void s390x_cpu_timer(void *opaque)
 }
 #endif
 
-S390CPU *cpu_s390x_init(const char *cpu_model)
+S390CPU *cpu_s390x_create(const char *cpu_model, Error **errp)
+{
+    return S390_CPU(object_new(TYPE_S390_CPU));
+}
+
+S390CPU *s390x_new_cpu(const char *cpu_model, int64_t id, Error **errp)
 {
     S390CPU *cpu;
+    Error *err = NULL;
 
-    cpu = S390_CPU(object_new(TYPE_S390_CPU));
+    cpu = cpu_s390x_create(cpu_model, &err);
+    if (err != NULL) {
+        goto out;
+    }
 
-    object_property_set_bool(OBJECT(cpu), true, "realized", NULL);
+    object_property_set_int(OBJECT(cpu), id, "id", &err);
+    if (err != NULL) {
+        goto out;
+    }
+    object_property_set_bool(OBJECT(cpu), true, "realized", &err);
 
+out:
+    if (err) {
+        error_propagate(errp, err);
+        object_unref(OBJECT(cpu));
+        cpu = NULL;
+    }
+    return cpu;
+}
+
+S390CPU *cpu_s390x_init(const char *cpu_model)
+{
+    Error *err = NULL;
+    S390CPU *cpu;
+    /* Use to track CPU ID for linux-user only */
+    static int64_t next_cpu_id;
+
+    cpu = s390x_new_cpu(cpu_model, next_cpu_id++, &err);
+    if (err) {
+        error_report_err(err);
+    }
     return cpu;
 }
 
@@ -133,7 +170,7 @@ int s390_cpu_handle_mmu_fault(CPUState *cs, vaddr orig_vaddr,
     }
 
     /* check out of RAM access */
-    if (raddr > (ram_size + virtio_size)) {
+    if (raddr > ram_size) {
         DPRINTF("%s: raddr %" PRIx64 " > ram_size %" PRIx64 "\n", __func__,
                 (uint64_t)raddr, (uint64_t)ram_size);
         trigger_pgm_exception(env, PGM_ADDRESSING, ILEN_LATER);
@@ -162,8 +199,9 @@ hwaddr s390_cpu_get_phys_page_debug(CPUState *cs, vaddr vaddr)
         vaddr &= 0x7fffffff;
     }
 
-    mmu_translate(env, vaddr, MMU_INST_FETCH, asc, &raddr, &prot, false);
-
+    if (mmu_translate(env, vaddr, MMU_INST_FETCH, asc, &raddr, &prot, false)) {
+        return -1;
+    }
     return raddr;
 }
 
@@ -646,7 +684,7 @@ void s390x_cpu_debug_excp_handler(CPUState *cs)
            will be triggered, it will call load_psw which will recompute
            the watchpoints.  */
         cpu_watchpoint_remove_all(cs, BP_CPU);
-        cpu_resume_from_signal(cs, NULL);
+        cpu_loop_exit_noexc(cs);
     }
 }
 #endif /* CONFIG_USER_ONLY */

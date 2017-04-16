@@ -22,10 +22,13 @@
  * THE SOFTWARE.
  */
 
-#include "qemu-common.h"
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "block/block_int.h"
 #include "block/qcow2.h"
+#include "qemu/bswap.h"
 #include "qemu/error-report.h"
+#include "qemu/cutils.h"
 
 void qcow2_free_snapshots(BlockDriverState *bs)
 {
@@ -509,7 +512,8 @@ int qcow2_snapshot_goto(BlockDriverState *bs, const char *snapshot_id)
         goto fail;
     }
 
-    ret = bdrv_pread(bs->file, sn->l1_table_offset, sn_l1_table, sn_l1_bytes);
+    ret = bdrv_pread(bs->file, sn->l1_table_offset,
+                     sn_l1_table, sn_l1_bytes);
     if (ret < 0) {
         goto fail;
     }
@@ -706,13 +710,14 @@ int qcow2_snapshot_load_tmp(BlockDriverState *bs,
         return -EFBIG;
     }
     new_l1_bytes = sn->l1_size * sizeof(uint64_t);
-    new_l1_table = qemu_try_blockalign(bs->file,
+    new_l1_table = qemu_try_blockalign(bs->file->bs,
                                        align_offset(new_l1_bytes, 512));
     if (new_l1_table == NULL) {
         return -ENOMEM;
     }
 
-    ret = bdrv_pread(bs->file, sn->l1_table_offset, new_l1_table, new_l1_bytes);
+    ret = bdrv_pread(bs->file, sn->l1_table_offset,
+                     new_l1_table, new_l1_bytes);
     if (ret < 0) {
         error_setg(errp, "Failed to read l1 table for snapshot");
         qemu_vfree(new_l1_table);

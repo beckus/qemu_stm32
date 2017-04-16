@@ -18,12 +18,11 @@
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
 
-#include <stdlib.h>
-#include <fcntl.h>
+#include "qemu/osdep.h"
 
-#include "config-host.h"
 #include "crypto-tls-x509-helpers.h"
 #include "crypto/tlscredsx509.h"
+#include "qapi/error.h"
 
 #ifdef QCRYPTO_HAVE_TLS_TEST_SUPPORT
 

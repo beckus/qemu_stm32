@@ -19,7 +19,9 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/timer/arm_mptimer.h"
+#include "qapi/error.h"
 #include "qemu/timer.h"
 #include "qom/cpu.h"
 
@@ -220,8 +222,9 @@ static void arm_mptimer_realize(DeviceState *dev, Error **errp)
     int i;
 
     if (s->num_cpu < 1 || s->num_cpu > ARM_MPTIMER_MAX_CPUS) {
-        hw_error("%s: num-cpu must be between 1 and %d\n",
-                 __func__, ARM_MPTIMER_MAX_CPUS);
+        error_setg(errp, "num-cpu must be between 1 and %d",
+                   ARM_MPTIMER_MAX_CPUS);
+        return;
     }
     /* We implement one timer block per CPU, and expose multiple MMIO regions:
      *  * region 0 is "timer for this core"

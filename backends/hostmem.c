@@ -9,8 +9,10 @@
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
  * See the COPYING file in the top-level directory.
  */
+#include "qemu/osdep.h"
 #include "sysemu/hostmem.h"
 #include "hw/boards.h"
+#include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qapi-types.h"
 #include "qapi-visit.h"
@@ -26,18 +28,18 @@ QEMU_BUILD_BUG_ON(HOST_MEM_POLICY_INTERLEAVE != MPOL_INTERLEAVE);
 #endif
 
 static void
-host_memory_backend_get_size(Object *obj, Visitor *v, void *opaque,
-                             const char *name, Error **errp)
+host_memory_backend_get_size(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
 {
     HostMemoryBackend *backend = MEMORY_BACKEND(obj);
     uint64_t value = backend->size;
 
-    visit_type_size(v, &value, name, errp);
+    visit_type_size(v, name, &value, errp);
 }
 
 static void
-host_memory_backend_set_size(Object *obj, Visitor *v, void *opaque,
-                             const char *name, Error **errp)
+host_memory_backend_set_size(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
 {
     HostMemoryBackend *backend = MEMORY_BACKEND(obj);
     Error *local_err = NULL;
@@ -48,7 +50,7 @@ host_memory_backend_set_size(Object *obj, Visitor *v, void *opaque,
         goto out;
     }
 
-    visit_type_size(v, &value, name, &local_err);
+    visit_type_size(v, name, &value, &local_err);
     if (local_err) {
         goto out;
     }
@@ -62,9 +64,17 @@ out:
     error_propagate(errp, local_err);
 }
 
+static uint16List **host_memory_append_node(uint16List **node,
+                                            unsigned long value)
+{
+     *node = g_malloc0(sizeof(**node));
+     (*node)->value = value;
+     return &(*node)->next;
+}
+
 static void
-host_memory_backend_get_host_nodes(Object *obj, Visitor *v, void *opaque,
-                                   const char *name, Error **errp)
+host_memory_backend_get_host_nodes(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
 {
     HostMemoryBackend *backend = MEMORY_BACKEND(obj);
     uint16List *host_nodes = NULL;
@@ -72,13 +82,12 @@ host_memory_backend_get_host_nodes(Object *obj, Visitor *v, void *opaque,
     unsigned long value;
 
     value = find_first_bit(backend->host_nodes, MAX_NODES);
-    if (value == MAX_NODES) {
-        return;
-    }
 
-    *node = g_malloc0(sizeof(**node));
-    (*node)->value = value;
-    node = &(*node)->next;
+    node = host_memory_append_node(node, value);
+
+    if (value == MAX_NODES) {
+        goto out;
+    }
 
     do {
         value = find_next_bit(backend->host_nodes, MAX_NODES, value + 1);
@@ -86,23 +95,22 @@ host_memory_backend_get_host_nodes(Object *obj, Visitor *v, void *opaque,
             break;
         }
 
-        *node = g_malloc0(sizeof(**node));
-        (*node)->value = value;
-        node = &(*node)->next;
+        node = host_memory_append_node(node, value);
     } while (true);
 
-    visit_type_uint16List(v, &host_nodes, name, errp);
+out:
+    visit_type_uint16List(v, name, &host_nodes, errp);
 }
 
 static void
-host_memory_backend_set_host_nodes(Object *obj, Visitor *v, void *opaque,
-                                   const char *name, Error **errp)
+host_memory_backend_set_host_nodes(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
 {
 #ifdef CONFIG_NUMA
     HostMemoryBackend *backend = MEMORY_BACKEND(obj);
     uint16List *l = NULL;
 
-    visit_type_uint16List(v, &l, name, errp);
+    visit_type_uint16List(v, name, &l, errp);
 
     while (l) {
         bitmap_set(backend->host_nodes, l->value, 1);
@@ -195,6 +203,7 @@ static bool host_memory_backend_get_prealloc(Object *obj, Error **errp)
 static void host_memory_backend_set_prealloc(Object *obj, bool value,
                                              Error **errp)
 {
+    Error *local_err = NULL;
     HostMemoryBackend *backend = MEMORY_BACKEND(obj);
 
     if (backend->force_prealloc) {
@@ -215,7 +224,11 @@ static void host_memory_backend_set_prealloc(Object *obj, bool value,
         void *ptr = memory_region_get_ram_ptr(&backend->mr);
         uint64_t sz = memory_region_size(&backend->mr);
 
-        os_mem_prealloc(fd, ptr, sz);
+        os_mem_prealloc(fd, ptr, sz, &local_err);
+        if (local_err) {
+            error_propagate(errp, local_err);
+            return;
+        }
         backend->prealloc = true;
     }
 }
@@ -256,6 +269,16 @@ host_memory_backend_get_memory(HostMemoryBackend *backend, Error **errp)
     return memory_region_size(&backend->mr) ? &backend->mr : NULL;
 }
 
+void host_memory_backend_set_mapped(HostMemoryBackend *backend, bool mapped)
+{
+    backend->is_mapped = mapped;
+}
+
+bool host_memory_backend_is_mapped(HostMemoryBackend *backend)
+{
+    return backend->is_mapped;
+}
+
 static void
 host_memory_backend_memory_complete(UserCreatable *uc, Error **errp)
 {
@@ -268,8 +291,7 @@ host_memory_backend_memory_complete(UserCreatable *uc, Error **errp)
     if (bc->alloc) {
         bc->alloc(backend, &local_err);
         if (local_err) {
-            error_propagate(errp, local_err);
-            return;
+            goto out;
         }
 
         ptr = memory_region_get_ram_ptr(&backend->mr);
@@ -313,9 +335,11 @@ host_memory_backend_memory_complete(UserCreatable *uc, Error **errp)
         assert(maxnode <= MAX_NODES);
         if (mbind(ptr, sz, backend->policy,
                   maxnode ? backend->host_nodes : NULL, maxnode + 1, flags)) {
-            error_setg_errno(errp, errno,
-                             "cannot bind memory to host NUMA nodes");
-            return;
+            if (backend->policy != MPOL_DEFAULT || errno != ENOSYS) {
+                error_setg_errno(errp, errno,
+                                 "cannot bind memory to host NUMA nodes");
+                return;
+            }
         }
 #endif
         /* Preallocate memory after the NUMA policy has been instantiated.
@@ -323,18 +347,21 @@ host_memory_backend_memory_complete(UserCreatable *uc, Error **errp)
          * specified NUMA policy in place.
          */
         if (backend->prealloc) {
-            os_mem_prealloc(memory_region_get_fd(&backend->mr), ptr, sz);
+            os_mem_prealloc(memory_region_get_fd(&backend->mr), ptr, sz,
+                            &local_err);
+            if (local_err) {
+                goto out;
+            }
         }
     }
+out:
+    error_propagate(errp, local_err);
 }
 
 static bool
 host_memory_backend_can_be_deleted(UserCreatable *uc, Error **errp)
 {
-    MemoryRegion *mr;
-
-    mr = host_memory_backend_get_memory(MEMORY_BACKEND(uc), errp);
-    if (memory_region_is_mapped(mr)) {
+    if (host_memory_backend_is_mapped(MEMORY_BACKEND(uc))) {
         return false;
     } else {
         return true;

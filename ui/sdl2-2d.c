@@ -23,6 +23,7 @@
  */
 /* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "ui/console.h"
 #include "ui/input.h"
@@ -45,10 +46,23 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
         return;
     }
 
+    /*
+     * SDL2 seems to do some double-buffering, and trying to only
+     * update the changed areas results in only one of the two buffers
+     * being updated.  Which flickers alot.  So lets not try to be
+     * clever do a full update every time ...
+     */
+#if 0
     rect.x = x;
     rect.y = y;
     rect.w = w;
     rect.h = h;
+#else
+    rect.x = 0;
+    rect.y = 0;
+    rect.w = surface_width(surf);
+    rect.h = surface_height(surf);
+#endif
 
     SDL_UpdateTexture(scon->texture, NULL, surface_data(surf),
                       surface_stride(surf));
@@ -101,6 +115,9 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
         break;
     case PIXMAN_r8g8b8x8:
         format = SDL_PIXELFORMAT_RGBA8888;
+        break;
+    case PIXMAN_b8g8r8x8:
+        format = SDL_PIXELFORMAT_BGRX8888;
         break;
     default:
         g_assert_not_reached();

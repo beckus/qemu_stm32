@@ -10,12 +10,8 @@
  * See the COPYING file in the top-level directory.
  */
 
-#ifndef QEMU_ERROR_H
-#define QEMU_ERROR_H
-
-#include <stdarg.h>
-#include <stdbool.h>
-#include "qemu/compiler.h"
+#ifndef QEMU_ERROR_REPORT_H
+#define QEMU_ERROR_REPORT_H
 
 typedef struct Location {
     /* all members are private to qemu-error.c */

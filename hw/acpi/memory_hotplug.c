@@ -1,3 +1,4 @@
+#include "qemu/osdep.h"
 #include "hw/acpi/memory_hotplug.h"
 #include "hw/acpi/pc-hotplug.h"
 #include "hw/mem/pc-dimm.h"
@@ -155,6 +156,7 @@ static void acpi_memory_hotplug_write(void *opaque, hwaddr addr, uint64_t data,
                 qapi_event_send_mem_unplug_error(dev->id,
                                                  error_get_pretty(local_err),
                                                  &error_abort);
+                error_free(local_err);
                 break;
             }
             trace_mhp_acpi_pc_dimm_deleted(mem_st->selector);
@@ -226,10 +228,15 @@ acpi_memory_slot_status(MemHotplugState *mem_st,
     return &mem_st->devs[slot];
 }
 
-void acpi_memory_plug_cb(ACPIREGS *ar, qemu_irq irq, MemHotplugState *mem_st,
+void acpi_memory_plug_cb(HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
                          DeviceState *dev, Error **errp)
 {
     MemStatus *mdev;
+    DeviceClass *dc = DEVICE_GET_CLASS(dev);
+
+    if (!dc->hotpluggable) {
+        return;
+    }
 
     mdev = acpi_memory_slot_status(mem_st, dev, errp);
     if (!mdev) {
@@ -238,14 +245,13 @@ void acpi_memory_plug_cb(ACPIREGS *ar, qemu_irq irq, MemHotplugState *mem_st,
 
     mdev->dimm = dev;
     mdev->is_enabled = true;
-    mdev->is_inserting = true;
-
-    /* do ACPI magic */
-    acpi_send_gpe_event(ar, irq, ACPI_MEMORY_HOTPLUG_STATUS);
-    return;
+    if (dev->hotplugged) {
+        mdev->is_inserting = true;
+        acpi_send_event(DEVICE(hotplug_dev), ACPI_MEMORY_HOTPLUG_STATUS);
+    }
 }
 
-void acpi_memory_unplug_request_cb(ACPIREGS *ar, qemu_irq irq,
+void acpi_memory_unplug_request_cb(HotplugHandler *hotplug_dev,
                                    MemHotplugState *mem_st,
                                    DeviceState *dev, Error **errp)
 {
@@ -257,9 +263,7 @@ void acpi_memory_unplug_request_cb(ACPIREGS *ar, qemu_irq irq,
     }
 
     mdev->is_removing = true;
-
-    /* Do ACPI magic */
-    acpi_send_gpe_event(ar, irq, ACPI_MEMORY_HOTPLUG_STATUS);
+    acpi_send_event(DEVICE(hotplug_dev), ACPI_MEMORY_HOTPLUG_STATUS);
 }
 
 void acpi_memory_unplug_cb(MemHotplugState *mem_st,

@@ -16,7 +16,6 @@
 #ifndef QEMU_TAP_LINUX_H
 #define QEMU_TAP_LINUX_H
 
-#include <stdint.h>
 #ifdef __linux__
 
 #include <linux/ioctl.h>
@@ -51,4 +50,4 @@
 #define TUN_F_TSO_ECN	0x08	/* I can handle TSO with ECN bits. */
 #define TUN_F_UFO	0x10	/* I can handle UFO packets */
 
-#endif /* QEMU_TAP_H */
+#endif /* QEMU_TAP_LINUX_H */

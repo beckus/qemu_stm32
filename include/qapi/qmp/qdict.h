@@ -16,8 +16,6 @@
 #include "qapi/qmp/qobject.h"
 #include "qapi/qmp/qlist.h"
 #include "qemu/queue.h"
-#include <stdbool.h>
-#include <stdint.h>
 
 #define QDICT_BUCKET_MAX 512
 
@@ -28,7 +26,7 @@ typedef struct QDictEntry {
 } QDictEntry;
 
 typedef struct QDict {
-    QObject_HEAD;
+    QObject base;
     size_t size;
     QLIST_HEAD(,QDictEntry) table[QDICT_BUCKET_MAX];
 } QDict;
@@ -48,6 +46,7 @@ void qdict_iter(const QDict *qdict,
                 void *opaque);
 const QDictEntry *qdict_first(const QDict *qdict);
 const QDictEntry *qdict_next(const QDict *qdict, const QDictEntry *entry);
+void qdict_destroy_obj(QObject *obj);
 
 /* Helper to qdict_put_obj(), accepts any object */
 #define qdict_put(qdict, key, obj) \

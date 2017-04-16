@@ -20,7 +20,7 @@
  */
 
 #ifndef NMI_H
-#define NMI_H 1
+#define NMI_H
 
 #include "qemu-common.h"
 #include "qom/object.h"
@@ -45,6 +45,5 @@ typedef struct NMIClass {
 } NMIClass;
 
 void nmi_monitor_handle(int cpu_index, Error **errp);
-void inject_nmi(void);
 
 #endif /* NMI_H */

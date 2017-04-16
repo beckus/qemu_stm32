@@ -6,16 +6,21 @@
  * that we need to emulate as well.
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "elf.h"
 #include "hw/loader.h"
 #include "hw/boards.h"
 #include "alpha_sys.h"
+#include "qemu/error-report.h"
 #include "sysemu/sysemu.h"
 #include "hw/timer/mc146818rtc.h"
 #include "hw/ide.h"
 #include "hw/timer/i8254.h"
 #include "hw/char/serial.h"
+#include "qemu/cutils.h"
 
 #define MAX_IDE_BUS 2
 
@@ -104,14 +109,14 @@ static void clipper_init(MachineState *machine)
     palcode_filename = qemu_find_file(QEMU_FILE_TYPE_BIOS,
                                 bios_name ? bios_name : "palcode-clipper");
     if (palcode_filename == NULL) {
-        hw_error("no palcode provided\n");
+        error_report("no palcode provided");
         exit(1);
     }
     size = load_elf(palcode_filename, cpu_alpha_superpage_to_phys,
                     NULL, &palcode_entry, &palcode_low, &palcode_high,
-                    0, EM_ALPHA, 0);
+                    0, EM_ALPHA, 0, 0);
     if (size < 0) {
-        hw_error("could not load palcode '%s'\n", palcode_filename);
+        error_report("could not load palcode '%s'", palcode_filename);
         exit(1);
     }
     g_free(palcode_filename);
@@ -129,9 +134,9 @@ static void clipper_init(MachineState *machine)
 
         size = load_elf(kernel_filename, cpu_alpha_superpage_to_phys,
                         NULL, &kernel_entry, &kernel_low, &kernel_high,
-                        0, EM_ALPHA, 0);
+                        0, EM_ALPHA, 0, 0);
         if (size < 0) {
-            hw_error("could not load kernel '%s'\n", kernel_filename);
+            error_report("could not load kernel '%s'", kernel_filename);
             exit(1);
         }
 
@@ -148,8 +153,8 @@ static void clipper_init(MachineState *machine)
 
             initrd_size = get_image_size(initrd_filename);
             if (initrd_size < 0) {
-                hw_error("could not load initial ram disk '%s'\n",
-                         initrd_filename);
+                error_report("could not load initial ram disk '%s'",
+                             initrd_filename);
                 exit(1);
             }
 

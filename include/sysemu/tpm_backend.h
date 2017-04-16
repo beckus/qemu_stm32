@@ -10,12 +10,11 @@
  * See the COPYING file in the top-level directory.
  */
 
-#ifndef _QEMU_TPM_H
-#define _QEMU_TPM_H
+#ifndef TPM_BACKEND_H
+#define TPM_BACKEND_H
 
 #include "qom/object.h"
 #include "qemu-common.h"
-#include "qapi/error.h"
 #include "qapi-types.h"
 #include "qemu/option.h"
 #include "sysemu/tpm.h"

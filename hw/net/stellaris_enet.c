@@ -6,6 +6,7 @@
  *
  * This code is licensed under the GPL.
  */
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "net/net.h"
 #include <zlib.h>
@@ -235,8 +236,18 @@ static ssize_t stellaris_enet_receive(NetClientState *nc, const uint8_t *buf, si
     n = s->next_packet + s->np;
     if (n >= 31)
         n -= 31;
-    s->np++;
 
+    if (size >= sizeof(s->rx[n].data) - 6) {
+        /* If the packet won't fit into the
+         * emulated 2K RAM, this is reported
+         * as a FIFO overrun error.
+         */
+        s->ris |= SE_INT_FOV;
+        stellaris_enet_update(s);
+        return -1;
+    }
+
+    s->np++;
     s->rx[n].len = size + 6;
     p = s->rx[n].data;
     *(p++) = (size + 6);
@@ -449,7 +460,7 @@ static void stellaris_enet_reset(stellaris_enet_state *s)
 }
 
 static NetClientInfo net_stellaris_enet_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .receive = stellaris_enet_receive,
 };

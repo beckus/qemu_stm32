@@ -22,13 +22,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#ifndef HOST_UTILS_H
-#define HOST_UTILS_H 1
 
-#include "qemu/compiler.h"   /* QEMU_GNUC_PREREQ */
+#ifndef HOST_UTILS_H
+#define HOST_UTILS_H
+
 #include "qemu/bswap.h"
-#include <limits.h>
-#include <stdbool.h>
 
 #ifdef CONFIG_INT128
 static inline void mulu64(uint64_t *plow, uint64_t *phigh,
@@ -489,7 +487,7 @@ static inline uint64_t revbit64(uint64_t x)
 static inline bool is_power_of_2(uint64_t value)
 {
     if (!value) {
-        return 0;
+        return false;
     }
 
     return !(value & (value - 1));

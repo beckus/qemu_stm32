@@ -22,6 +22,8 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/boards.h"
 #include "qemu/error-report.h"
 #include "hw/arm/stm32f205_soc.h"
@@ -29,18 +31,13 @@
 static void netduino2_init(MachineState *machine)
 {
     DeviceState *dev;
-    Error *err = NULL;
 
     dev = qdev_create(NULL, TYPE_STM32F205_SOC);
     if (machine->kernel_filename) {
         qdev_prop_set_string(dev, "kernel-filename", machine->kernel_filename);
     }
     qdev_prop_set_string(dev, "cpu-model", "cortex-m3");
-    object_property_set_bool(OBJECT(dev), true, "realized", &err);
-    if (err != NULL) {
-        error_report("%s", error_get_pretty(err));
-        exit(1);
-    }
+    object_property_set_bool(OBJECT(dev), true, "realized", &error_fatal);
 }
 
 static void netduino2_machine_init(MachineClass *mc)

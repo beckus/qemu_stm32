@@ -1,5 +1,6 @@
 #ifndef QEMU_SMBIOS_H
 #define QEMU_SMBIOS_H
+
 /*
  * SMBIOS Support
  *
@@ -33,7 +34,7 @@ typedef enum SmbiosEntryPointType {
 
 /* SMBIOS Entry Point
  * There are two types of entry points defined in the SMBIOS specification
- * (see below). BIOS must place the entry point(s) at a 16-bit-aligned
+ * (see below). BIOS must place the entry point(s) at a 16-byte-aligned
  * address between 0xf0000 and 0xfffff. Note that either entry point type
  * can be used in a 64-bit target system, except that SMBIOS 2.1 entry point
  * only allows the SMBIOS struct table to reside below 4GB address space.
@@ -266,4 +267,4 @@ void smbios_get_tables(const struct smbios_phys_mem_area *mem_array,
                        const unsigned int mem_array_size,
                        uint8_t **tables, size_t *tables_len,
                        uint8_t **anchor, size_t *anchor_len);
-#endif /*QEMU_SMBIOS_H */
+#endif /* QEMU_SMBIOS_H */

@@ -23,6 +23,10 @@
  *  with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/arm/fsl-imx25.h"
 #include "hw/boards.h"
 #include "qemu/error-report.h"
@@ -64,7 +68,6 @@ static struct arm_boot_info imx25_pdk_binfo;
 static void imx25_pdk_init(MachineState *machine)
 {
     IMX25PDK *s = g_new0(IMX25PDK, 1);
-    Error *err = NULL;
     unsigned int ram_size;
     unsigned int alias_offset;
     int i;
@@ -73,11 +76,7 @@ static void imx25_pdk_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "soc", OBJECT(&s->soc),
                               &error_abort);
 
-    object_property_set_bool(OBJECT(&s->soc), true, "realized", &err);
-    if (err != NULL) {
-        error_report("%s", error_get_pretty(err));
-        exit(1);
-    }
+    object_property_set_bool(OBJECT(&s->soc), true, "realized", &error_fatal);
 
     /* We need to initialize our memory */
     if (machine->ram_size > (FSL_IMX25_SDRAM0_SIZE + FSL_IMX25_SDRAM1_SIZE)) {
@@ -151,4 +150,4 @@ static void imx25_pdk_machine_init(MachineClass *mc)
     mc->init = imx25_pdk_init;
 }
 
-DEFINE_MACHINE("imx25_pdk", imx25_pdk_machine_init)
+DEFINE_MACHINE("imx25-pdk", imx25_pdk_machine_init)

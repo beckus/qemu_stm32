@@ -1,5 +1,5 @@
-#ifndef TARGET_SIGNAL_H
-#define TARGET_SIGNAL_H
+#ifndef TILEGX_TARGET_SIGNAL_H
+#define TILEGX_TARGET_SIGNAL_H
 
 #include "cpu.h"
 
@@ -25,4 +25,5 @@ static inline abi_ulong get_sp_from_cpustate(CPUTLGState *state)
     return state->regs[TILEGX_R_SP];
 }
 
-#endif /* TARGET_SIGNAL_H */
+
+#endif /* TILEGX_TARGET_SIGNAL_H */

@@ -18,6 +18,8 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/cpu/a15mpcore.h"
 #include "sysemu/kvm.h"
 #include "kvm_arm.h"
@@ -108,7 +110,7 @@ static void a15mp_priv_realize(DeviceState *dev, Error **errp)
     /* Memory map (addresses are offsets from PERIPHBASE):
      *  0x0000-0x0fff -- reserved
      *  0x1000-0x1fff -- GIC Distributor
-     *  0x2000-0x2fff -- GIC CPU interface
+     *  0x2000-0x3fff -- GIC CPU interface
      *  0x4000-0x4fff -- GIC virtual interface control (not modelled)
      *  0x5000-0x5fff -- GIC virtual interface control (not modelled)
      *  0x6000-0x7fff -- GIC virtual CPU interface (not modelled)

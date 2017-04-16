@@ -23,15 +23,9 @@
  */
 
 /* Needed for CONFIG_MADVISE */
-#include "config-host.h"
-
-#if defined(CONFIG_MADVISE) || defined(CONFIG_POSIX_MADVISE)
-#include <sys/mman.h>
-#endif
-
+#include "qemu/osdep.h"
 #include "block/block_int.h"
 #include "qemu-common.h"
-#include "qemu/osdep.h"
 #include "qcow2.h"
 #include "trace.h"
 
@@ -127,7 +121,7 @@ Qcow2Cache *qcow2_cache_create(BlockDriverState *bs, int num_tables)
     c = g_new0(Qcow2Cache, 1);
     c->size = num_tables;
     c->entries = g_try_new0(Qcow2CachedTable, num_tables);
-    c->table_array = qemu_try_blockalign(bs->file,
+    c->table_array = qemu_try_blockalign(bs->file->bs,
                                          (size_t) num_tables * s->cluster_size);
 
     if (!c->entries || !c->table_array) {
@@ -185,7 +179,7 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
     if (c->depends) {
         ret = qcow2_cache_flush_dependency(bs, c);
     } else if (c->depends_on_flush) {
-        ret = bdrv_flush(bs->file);
+        ret = bdrv_flush(bs->file->bs);
         if (ret >= 0) {
             c->depends_on_flush = false;
         }
@@ -227,7 +221,7 @@ static int qcow2_cache_entry_flush(BlockDriverState *bs, Qcow2Cache *c, int i)
     return 0;
 }
 
-int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
+int qcow2_cache_write(BlockDriverState *bs, Qcow2Cache *c)
 {
     BDRVQcow2State *s = bs->opaque;
     int result = 0;
@@ -243,8 +237,15 @@ int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
         }
     }
 
+    return result;
+}
+
+int qcow2_cache_flush(BlockDriverState *bs, Qcow2Cache *c)
+{
+    int result = qcow2_cache_write(bs, c);
+
     if (result == 0) {
-        ret = bdrv_flush(bs->file);
+        int ret = bdrv_flush(bs->file->bs);
         if (ret < 0) {
             result = ret;
         }
@@ -356,7 +357,8 @@ static int qcow2_cache_do_get(BlockDriverState *bs, Qcow2Cache *c,
             BLKDBG_EVENT(bs->file, BLKDBG_L2_LOAD);
         }
 
-        ret = bdrv_pread(bs->file, offset, qcow2_cache_get_table_addr(bs, c, i),
+        ret = bdrv_pread(bs->file, offset,
+                         qcow2_cache_get_table_addr(bs, c, i),
                          s->cluster_size);
         if (ret < 0) {
             return ret;

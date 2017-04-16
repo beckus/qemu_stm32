@@ -10,12 +10,14 @@
  * the COPYING file in the top-level directory.
  *
  */
-#ifndef QEMU_HPET_EMUL_H
-#define QEMU_HPET_EMUL_H
+
+#ifndef HW_HPET_H
+#define HW_HPET_H
 
 #include "qom/object.h"
 
 #define HPET_BASE               0xfed00000
+#define HPET_LEN                0x400
 #define HPET_CLK_PERIOD         10 /* 10 ns*/
 
 #define FS_PER_NS 1000000       /* 1000000 femtoseconds == 1 ns */

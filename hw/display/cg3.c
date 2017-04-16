@@ -23,11 +23,15 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
+#include "cpu.h"
 #include "qemu/error-report.h"
 #include "ui/console.h"
 #include "hw/sysbus.h"
 #include "hw/loader.h"
+#include "qemu/log.h"
 
 /* Change to 1 to enable debugging */
 #define DEBUG_CG3 0
@@ -280,12 +284,12 @@ static void cg3_initfn(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
     CG3State *s = CG3(obj);
 
-    memory_region_init_ram(&s->rom, NULL, "cg3.prom", FCODE_MAX_ROM_SIZE,
+    memory_region_init_ram(&s->rom, obj, "cg3.prom", FCODE_MAX_ROM_SIZE,
                            &error_fatal);
     memory_region_set_readonly(&s->rom, true);
     sysbus_init_mmio(sbd, &s->rom);
 
-    memory_region_init_io(&s->reg, NULL, &cg3_reg_ops, s, "cg3.reg",
+    memory_region_init_io(&s->reg, obj, &cg3_reg_ops, s, "cg3.reg",
                           CG3_REG_SIZE);
     sysbus_init_mmio(sbd, &s->reg);
 }

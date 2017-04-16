@@ -10,6 +10,8 @@
  * See the COPYING file in the top-level directory.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_host.h"
@@ -23,6 +25,9 @@
 #define TYPE_PXB_BUS "pxb-bus"
 #define PXB_BUS(obj) OBJECT_CHECK(PXBBus, (obj), TYPE_PXB_BUS)
 
+#define TYPE_PXB_PCIE_BUS "pxb-pcie-bus"
+#define PXB_PCIE_BUS(obj) OBJECT_CHECK(PXBBus, (obj), TYPE_PXB_PCIE_BUS)
+
 typedef struct PXBBus {
     /*< private >*/
     PCIBus parent_obj;
@@ -34,6 +39,9 @@ typedef struct PXBBus {
 #define TYPE_PXB_DEVICE "pxb"
 #define PXB_DEV(obj) OBJECT_CHECK(PXBDev, (obj), TYPE_PXB_DEVICE)
 
+#define TYPE_PXB_PCIE_DEVICE "pxb-pcie"
+#define PXB_PCIE_DEV(obj) OBJECT_CHECK(PXBDev, (obj), TYPE_PXB_PCIE_DEVICE)
+
 typedef struct PXBDev {
     /*< private >*/
     PCIDevice parent_obj;
@@ -43,13 +51,18 @@ typedef struct PXBDev {
     uint16_t numa_node;
 } PXBDev;
 
+static PXBDev *convert_to_pxb(PCIDevice *dev)
+{
+    return pci_bus_is_express(dev->bus) ? PXB_PCIE_DEV(dev) : PXB_DEV(dev);
+}
+
 static GList *pxb_dev_list;
 
 #define TYPE_PXB_HOST "pxb-host"
 
 static int pxb_bus_num(PCIBus *bus)
 {
-    PXBDev *pxb = PXB_DEV(bus->parent_dev);
+    PXBDev *pxb = convert_to_pxb(bus->parent_dev);
 
     return pxb->bus_nr;
 }
@@ -61,7 +74,7 @@ static bool pxb_is_root(PCIBus *bus)
 
 static uint16_t pxb_bus_numa_node(PCIBus *bus)
 {
-    PXBDev *pxb = PXB_DEV(bus->parent_dev);
+    PXBDev *pxb = convert_to_pxb(bus->parent_dev);
 
     return pxb->numa_node;
 }
@@ -82,10 +95,18 @@ static const TypeInfo pxb_bus_info = {
     .class_init    = pxb_bus_class_init,
 };
 
+static const TypeInfo pxb_pcie_bus_info = {
+    .name          = TYPE_PXB_PCIE_BUS,
+    .parent        = TYPE_PCIE_BUS,
+    .instance_size = sizeof(PXBBus),
+    .class_init    = pxb_bus_class_init,
+};
+
 static const char *pxb_host_root_bus_path(PCIHostState *host_bridge,
                                           PCIBus *rootbus)
 {
-    PXBBus *bus = PXB_BUS(rootbus);
+    PXBBus *bus = pci_bus_is_express(rootbus) ?
+                  PXB_PCIE_BUS(rootbus) : PXB_BUS(rootbus);
 
     snprintf(bus->bus_path, 8, "0000:%02x", pxb_bus_num(rootbus));
     return bus->bus_path;
@@ -103,7 +124,7 @@ static char *pxb_host_ofw_unit_address(const SysBusDevice *dev)
 
     pxb_host = PCI_HOST_BRIDGE(dev);
     pxb_bus = pxb_host->bus;
-    pxb_dev = PXB_DEV(pxb_bus->parent_dev);
+    pxb_dev = convert_to_pxb(pxb_bus->parent_dev);
     position = g_list_index(pxb_dev_list, pxb_dev);
     assert(position >= 0);
 
@@ -129,6 +150,8 @@ static void pxb_host_class_init(ObjectClass *class, void *data)
     PCIHostBridgeClass *hc = PCI_HOST_BRIDGE_CLASS(class);
 
     dc->fw_name = "pci";
+    /* Reason: Internal part of the pxb/pxb-pcie device, not usable by itself */
+    dc->cannot_instantiate_with_device_add_yet = true;
     sbc->explicit_ofw_unit_address = pxb_host_ofw_unit_address;
     hc->root_bus_path = pxb_host_root_bus_path;
 }
@@ -140,30 +163,25 @@ static const TypeInfo pxb_host_info = {
 };
 
 /*
- * Registers the PXB bus as a child of the i440fx root bus.
- *
- * Returns 0 on successs, -1 if i440fx host was not
- * found or the bus number is already in use.
+ * Registers the PXB bus as a child of pci host root bus.
  */
-static int pxb_register_bus(PCIDevice *dev, PCIBus *pxb_bus)
+static void pxb_register_bus(PCIDevice *dev, PCIBus *pxb_bus, Error **errp)
 {
     PCIBus *bus = dev->bus;
     int pxb_bus_num = pci_bus_num(pxb_bus);
 
     if (bus->parent_dev) {
-        error_report("PXB devices can be attached only to root bus.");
-        return -1;
+        error_setg(errp, "PXB devices can be attached only to root bus");
+        return;
     }
 
     QLIST_FOREACH(bus, &bus->child, sibling) {
         if (pci_bus_num(bus) == pxb_bus_num) {
-            error_report("Bus %d is already in use.", pxb_bus_num);
-            return -1;
+            error_setg(errp, "Bus %d is already in use", pxb_bus_num);
+            return;
         }
     }
     QLIST_INSERT_HEAD(&dev->bus->child, pxb_bus, sibling);
-
-    return 0;
 }
 
 static int pxb_map_irq_fn(PCIDevice *pci_dev, int pin)
@@ -193,17 +211,18 @@ static gint pxb_compare(gconstpointer a, gconstpointer b)
            0;
 }
 
-static int pxb_dev_initfn(PCIDevice *dev)
+static void pxb_dev_realize_common(PCIDevice *dev, bool pcie, Error **errp)
 {
-    PXBDev *pxb = PXB_DEV(dev);
-    DeviceState *ds, *bds;
+    PXBDev *pxb = convert_to_pxb(dev);
+    DeviceState *ds, *bds = NULL;
     PCIBus *bus;
     const char *dev_name = NULL;
+    Error *local_err = NULL;
 
     if (pxb->numa_node != NUMA_NODE_UNASSIGNED &&
         pxb->numa_node >= nb_numa_nodes) {
-        error_report("Illegal numa node %d.", pxb->numa_node);
-        return -EINVAL;
+        error_setg(errp, "Illegal numa node %d", pxb->numa_node);
+        return;
     }
 
     if (dev->qdev.id && *dev->qdev.id) {
@@ -211,44 +230,66 @@ static int pxb_dev_initfn(PCIDevice *dev)
     }
 
     ds = qdev_create(NULL, TYPE_PXB_HOST);
-    bus = pci_bus_new(ds, "pxb-internal", NULL, NULL, 0, TYPE_PXB_BUS);
+    if (pcie) {
+        bus = pci_bus_new(ds, dev_name, NULL, NULL, 0, TYPE_PXB_PCIE_BUS);
+    } else {
+        bus = pci_bus_new(ds, "pxb-internal", NULL, NULL, 0, TYPE_PXB_BUS);
+        bds = qdev_create(BUS(bus), "pci-bridge");
+        bds->id = dev_name;
+        qdev_prop_set_uint8(bds, PCI_BRIDGE_DEV_PROP_CHASSIS_NR, pxb->bus_nr);
+        qdev_prop_set_bit(bds, PCI_BRIDGE_DEV_PROP_SHPC, false);
+    }
 
     bus->parent_dev = dev;
     bus->address_space_mem = dev->bus->address_space_mem;
     bus->address_space_io = dev->bus->address_space_io;
     bus->map_irq = pxb_map_irq_fn;
 
-    bds = qdev_create(BUS(bus), "pci-bridge");
-    bds->id = dev_name;
-    qdev_prop_set_uint8(bds, PCI_BRIDGE_DEV_PROP_CHASSIS_NR, pxb->bus_nr);
-    qdev_prop_set_bit(bds, PCI_BRIDGE_DEV_PROP_SHPC, false);
-
     PCI_HOST_BRIDGE(ds)->bus = bus;
 
-    if (pxb_register_bus(dev, bus)) {
-        return -EINVAL;
+    pxb_register_bus(dev, bus, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        goto err_register_bus;
     }
 
     qdev_init_nofail(ds);
-    qdev_init_nofail(bds);
+    if (bds) {
+        qdev_init_nofail(bds);
+    }
 
     pci_word_test_and_set_mask(dev->config + PCI_STATUS,
                                PCI_STATUS_66MHZ | PCI_STATUS_FAST_BACK);
     pci_config_set_class(dev->config, PCI_CLASS_BRIDGE_HOST);
 
     pxb_dev_list = g_list_insert_sorted(pxb_dev_list, pxb, pxb_compare);
-    return 0;
+    return;
+
+err_register_bus:
+    object_unref(OBJECT(bds));
+    object_unparent(OBJECT(bus));
+    object_unref(OBJECT(ds));
+}
+
+static void pxb_dev_realize(PCIDevice *dev, Error **errp)
+{
+    if (pci_bus_is_express(dev->bus)) {
+        error_setg(errp, "pxb devices cannot reside on a PCIe bus");
+        return;
+    }
+
+    pxb_dev_realize_common(dev, false, errp);
 }
 
 static void pxb_dev_exitfn(PCIDevice *pci_dev)
 {
-    PXBDev *pxb = PXB_DEV(pci_dev);
+    PXBDev *pxb = convert_to_pxb(pci_dev);
 
     pxb_dev_list = g_list_remove(pxb_dev_list, pxb);
 }
 
 static Property pxb_dev_properties[] = {
-    /* Note: 0 is not a legal a PXB bus number. */
+    /* Note: 0 is not a legal PXB bus number. */
     DEFINE_PROP_UINT8("bus_nr", PXBDev, bus_nr, 0),
     DEFINE_PROP_UINT16("numa_node", PXBDev, numa_node, NUMA_NODE_UNASSIGNED),
     DEFINE_PROP_END_OF_LIST(),
@@ -259,7 +300,7 @@ static void pxb_dev_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
 
-    k->init = pxb_dev_initfn;
+    k->realize = pxb_dev_realize;
     k->exit = pxb_dev_exitfn;
     k->vendor_id = PCI_VENDOR_ID_REDHAT;
     k->device_id = PCI_DEVICE_ID_REDHAT_PXB;
@@ -267,6 +308,8 @@ static void pxb_dev_class_init(ObjectClass *klass, void *data)
 
     dc->desc = "PCI Expander Bridge";
     dc->props = pxb_dev_properties;
+    dc->hotpluggable = false;
+    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 
 static const TypeInfo pxb_dev_info = {
@@ -276,11 +319,47 @@ static const TypeInfo pxb_dev_info = {
     .class_init    = pxb_dev_class_init,
 };
 
+static void pxb_pcie_dev_realize(PCIDevice *dev, Error **errp)
+{
+    if (!pci_bus_is_express(dev->bus)) {
+        error_setg(errp, "pxb-pcie devices cannot reside on a PCI bus");
+        return;
+    }
+
+    pxb_dev_realize_common(dev, true, errp);
+}
+
+static void pxb_pcie_dev_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
+
+    k->realize = pxb_pcie_dev_realize;
+    k->exit = pxb_dev_exitfn;
+    k->vendor_id = PCI_VENDOR_ID_REDHAT;
+    k->device_id = PCI_DEVICE_ID_REDHAT_PXB_PCIE;
+    k->class_id = PCI_CLASS_BRIDGE_HOST;
+
+    dc->desc = "PCI Express Expander Bridge";
+    dc->props = pxb_dev_properties;
+    dc->hotpluggable = false;
+    set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
+}
+
+static const TypeInfo pxb_pcie_dev_info = {
+    .name          = TYPE_PXB_PCIE_DEVICE,
+    .parent        = TYPE_PCI_DEVICE,
+    .instance_size = sizeof(PXBDev),
+    .class_init    = pxb_pcie_dev_class_init,
+};
+
 static void pxb_register_types(void)
 {
     type_register_static(&pxb_bus_info);
+    type_register_static(&pxb_pcie_bus_info);
     type_register_static(&pxb_host_info);
     type_register_static(&pxb_dev_info);
+    type_register_static(&pxb_pcie_dev_info);
 }
 
 type_init(pxb_register_types)

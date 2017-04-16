@@ -17,6 +17,7 @@ extern Monitor *cur_mon;
 bool monitor_cur_is_qmp(void);
 
 void monitor_init(CharDriverState *chr, int flags);
+void monitor_cleanup(void);
 
 int monitor_suspend(Monitor *mon);
 void monitor_resume(Monitor *mon);
@@ -43,9 +44,6 @@ void monitor_read_command(Monitor *mon, int show_prompt);
 int monitor_read_password(Monitor *mon, ReadLineFunc *readline_func,
                           void *opaque);
 
-void object_add(const char *type, const char *id, const QDict *qdict,
-                Visitor *v, Error **errp);
-
 AddfdInfo *monitor_fdset_add_fd(int fd, bool has_fdset_id, int64_t fdset_id,
                                 bool has_opaque, const char *opaque,
                                 Error **errp);
@@ -54,4 +52,4 @@ int monitor_fdset_dup_fd_add(int64_t fdset_id, int dup_fd);
 void monitor_fdset_dup_fd_remove(int dup_fd);
 int monitor_fdset_dup_fd_find(int dup_fd);
 
-#endif /* !MONITOR_H */
+#endif /* MONITOR_H */

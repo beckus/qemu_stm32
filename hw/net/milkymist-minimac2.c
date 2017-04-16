@@ -22,6 +22,10 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h" /* FIXME: why does this use TARGET_PAGE_ALIGN? */
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "trace.h"
@@ -443,7 +447,7 @@ static void milkymist_minimac2_reset(DeviceState *d)
 }
 
 static NetClientInfo net_milkymist_minimac2_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .receive = minimac2_rx,
 };

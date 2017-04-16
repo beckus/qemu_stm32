@@ -34,6 +34,8 @@
  *  Not sure which messages trigger this.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "hw/usb.h"

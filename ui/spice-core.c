@@ -15,6 +15,7 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include <spice.h>
 
 #include <netdb.h>
@@ -200,8 +201,6 @@ static void channel_event(int event, SpiceChannelEventInfo *info)
 {
     SpiceServerInfo *server = g_malloc0(sizeof(*server));
     SpiceChannel *client = g_malloc0(sizeof(*client));
-    server->base = g_malloc0(sizeof(*server->base));
-    client->base = g_malloc0(sizeof(*client->base));
 
     /*
      * Spice server might have called us from spice worker thread
@@ -218,9 +217,11 @@ static void channel_event(int event, SpiceChannelEventInfo *info)
     }
 
     if (info->flags & SPICE_CHANNEL_EVENT_FLAG_ADDR_EXT) {
-        add_addr_info(client->base, (struct sockaddr *)&info->paddr_ext,
+        add_addr_info(qapi_SpiceChannel_base(client),
+                      (struct sockaddr *)&info->paddr_ext,
                       info->plen_ext);
-        add_addr_info(server->base, (struct sockaddr *)&info->laddr_ext,
+        add_addr_info(qapi_SpiceServerInfo_base(server),
+                      (struct sockaddr *)&info->laddr_ext,
                       info->llen_ext);
     } else {
         error_report("spice: %s, extended address is expected",
@@ -229,7 +230,9 @@ static void channel_event(int event, SpiceChannelEventInfo *info)
 
     switch (event) {
     case SPICE_CHANNEL_EVENT_CONNECTED:
-        qapi_event_send_spice_connected(server->base, client->base, &error_abort);
+        qapi_event_send_spice_connected(qapi_SpiceServerInfo_base(server),
+                                        qapi_SpiceChannel_base(client),
+                                        &error_abort);
         break;
     case SPICE_CHANNEL_EVENT_INITIALIZED:
         if (auth) {
@@ -242,7 +245,9 @@ static void channel_event(int event, SpiceChannelEventInfo *info)
         break;
     case SPICE_CHANNEL_EVENT_DISCONNECTED:
         channel_list_del(info);
-        qapi_event_send_spice_disconnected(server->base, client->base, &error_abort);
+        qapi_event_send_spice_disconnected(qapi_SpiceServerInfo_base(server),
+                                           qapi_SpiceChannel_base(client),
+                                           &error_abort);
         break;
     default:
         break;
@@ -378,16 +383,15 @@ static SpiceChannelList *qmp_query_spice_channels(void)
 
         chan = g_malloc0(sizeof(*chan));
         chan->value = g_malloc0(sizeof(*chan->value));
-        chan->value->base = g_malloc0(sizeof(*chan->value->base));
 
         paddr = (struct sockaddr *)&item->info->paddr_ext;
         plen = item->info->plen_ext;
         getnameinfo(paddr, plen,
                     host, sizeof(host), port, sizeof(port),
                     NI_NUMERICHOST | NI_NUMERICSERV);
-        chan->value->base->host = g_strdup(host);
-        chan->value->base->port = g_strdup(port);
-        chan->value->base->family = inet_netfamily(paddr->sa_family);
+        chan->value->host = g_strdup(host);
+        chan->value->port = g_strdup(port);
+        chan->value->family = inet_netfamily(paddr->sa_family);
 
         chan->value->connection_id = item->info->connection_id;
         chan->value->channel_type = item->info->type;
@@ -490,9 +494,14 @@ static QemuOptsList qemu_spice_opts = {
         },{
             .name = "playback-compression",
             .type = QEMU_OPT_BOOL,
-        }, {
+        },{
             .name = "seamless-migration",
             .type = QEMU_OPT_BOOL,
+#ifdef HAVE_SPICE_GL
+        },{
+            .name = "gl",
+            .type = QEMU_OPT_BOOL,
+#endif
         },
         { /* end of list */ }
     },
@@ -564,7 +573,8 @@ static void migration_state_notifier(Notifier *notifier, void *data)
 
     if (migration_in_setup(s)) {
         spice_server_migrate_start(spice_server);
-    } else if (migration_has_finished(s)) {
+    } else if (migration_has_finished(s) ||
+               migration_in_postcopy_after_devices(s)) {
         spice_server_migrate_end(spice_server, true);
         spice_have_target_host = false;
     } else if (migration_has_failed(s)) {
@@ -724,8 +734,7 @@ void qemu_spice_init(void)
         qemu_spice_set_passwd(password, false, false);
     }
     if (qemu_opt_get_bool(opts, "sasl", 0)) {
-        if (spice_server_set_sasl_appname(spice_server, "qemu") == -1 ||
-            spice_server_set_sasl(spice_server, 1) == -1) {
+        if (spice_server_set_sasl(spice_server, 1) == -1) {
             error_report("spice: failed to enable sasl");
             exit(1);
         }
@@ -791,6 +800,7 @@ void qemu_spice_init(void)
 
     seamless_migration = qemu_opt_get_bool(opts, "seamless-migration", 0);
     spice_server_set_seamless_migration(spice_server, seamless_migration);
+    spice_server_set_sasl_appname(spice_server, "qemu");
     if (spice_server_init(spice_server, &core_interface) != 0) {
         error_report("failed to initialize spice server");
         exit(1);
@@ -814,6 +824,21 @@ void qemu_spice_init(void)
 
 #if SPICE_SERVER_VERSION >= 0x000c02
     qemu_spice_register_ports();
+#endif
+
+#ifdef HAVE_SPICE_GL
+    if (qemu_opt_get_bool(opts, "gl", 0)) {
+        if ((port != 0) || (tls_port != 0)) {
+            error_report("SPICE GL support is local-only for now and "
+                         "incompatible with -spice port/tls-port");
+            exit(1);
+        }
+        if (egl_rendernode_init() != 0) {
+            error_report("Failed to initialize EGL render node for SPICE GL");
+            exit(1);
+        }
+        display_opengl = 1;
+    }
 #endif
 }
 
@@ -927,4 +952,4 @@ static void spice_register_config(void)
 {
     qemu_add_opts(&qemu_spice_opts);
 }
-machine_init(spice_register_config);
+opts_init(spice_register_config);

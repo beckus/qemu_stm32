@@ -7,9 +7,12 @@
  * This code is licensed under the GPL.
  */
 
+#include "qemu/osdep.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "hw/arm/pxa.h"
+#include "qemu/log.h"
 
 #define PXA2XX_GPIO_BANKS	4
 

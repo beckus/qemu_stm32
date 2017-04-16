@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include "qemu/osdep.h"
 #include "net/clients.h"
 
 #include "rocker.h"
@@ -166,7 +167,7 @@ static void fp_port_set_link_status(NetClientState *nc)
 }
 
 static NetClientInfo fp_port_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .receive = fp_port_receive,
     .receive_iov = fp_port_receive_iov,
@@ -183,6 +184,11 @@ void fp_port_set_world(FpPort *port, World *world)
 {
     DPRINTF("port %d setting world \"%s\"\n", port->index, world_name(world));
     port->world = world;
+}
+
+bool fp_port_check_world(FpPort *port, World *world)
+{
+    return port->world == world;
 }
 
 bool fp_port_enabled(FpPort *port)

@@ -21,21 +21,31 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "block/block_int.h"
 #include "qapi/qmp/qbool.h"
 #include "qapi/qmp/qstring.h"
+#include "crypto/secret.h"
 #include <curl/curl.h>
+#include "qemu/cutils.h"
 
 // #define DEBUG_CURL
 // #define DEBUG_VERBOSE
 
 #ifdef DEBUG_CURL
-#define DPRINTF(fmt, ...) do { printf(fmt, ## __VA_ARGS__); } while (0)
+#define DEBUG_CURL_PRINT 1
 #else
-#define DPRINTF(fmt, ...) do { } while (0)
+#define DEBUG_CURL_PRINT 0
 #endif
+#define DPRINTF(fmt, ...)                                            \
+    do {                                                             \
+        if (DEBUG_CURL_PRINT) {                                      \
+            fprintf(stderr, fmt, ## __VA_ARGS__);                    \
+        }                                                            \
+    } while (0)
 
 #if LIBCURL_VERSION_NUM >= 0x071000
 /* The multi interface timer callback was introduced in 7.16.0 */
@@ -63,7 +73,6 @@ static CURLMcode __curl_multi_socket_action(CURLM *multi_handle,
 
 #define CURL_NUM_STATES 8
 #define CURL_NUM_ACB    8
-#define SECTOR_SIZE     512
 #define READ_AHEAD_DEFAULT (256 * 1024)
 #define CURL_TIMEOUT_DEFAULT 5
 #define CURL_TIMEOUT_MAX 10000
@@ -77,6 +86,10 @@ static CURLMcode __curl_multi_socket_action(CURLM *multi_handle,
 #define CURL_BLOCK_OPT_SSLVERIFY "sslverify"
 #define CURL_BLOCK_OPT_TIMEOUT "timeout"
 #define CURL_BLOCK_OPT_COOKIE    "cookie"
+#define CURL_BLOCK_OPT_USERNAME "username"
+#define CURL_BLOCK_OPT_PASSWORD_SECRET "password-secret"
+#define CURL_BLOCK_OPT_PROXY_USERNAME "proxy-username"
+#define CURL_BLOCK_OPT_PROXY_PASSWORD_SECRET "proxy-password-secret"
 
 struct BDRVCURLState;
 
@@ -92,12 +105,17 @@ typedef struct CURLAIOCB {
     size_t end;
 } CURLAIOCB;
 
+typedef struct CURLSocket {
+    int fd;
+    QLIST_ENTRY(CURLSocket) next;
+} CURLSocket;
+
 typedef struct CURLState
 {
     struct BDRVCURLState *s;
     CURLAIOCB *acb[CURL_NUM_ACB];
     CURL *curl;
-    curl_socket_t sock_fd;
+    QLIST_HEAD(, CURLSocket) sockets;
     char *orig_buf;
     size_t buf_start;
     size_t buf_off;
@@ -119,6 +137,10 @@ typedef struct BDRVCURLState {
     char *cookie;
     bool accept_range;
     AioContext *aio_context;
+    char *username;
+    char *password;
+    char *proxyusername;
+    char *proxypassword;
 } BDRVCURLState;
 
 static void curl_clean_state(CURLState *s);
@@ -147,25 +169,44 @@ static int curl_sock_cb(CURL *curl, curl_socket_t fd, int action,
 {
     BDRVCURLState *s;
     CURLState *state = NULL;
+    CURLSocket *socket;
+
     curl_easy_getinfo(curl, CURLINFO_PRIVATE, (char **)&state);
-    state->sock_fd = fd;
     s = state->s;
 
-    DPRINTF("CURL (AIO): Sock action %d on fd %d\n", action, fd);
+    QLIST_FOREACH(socket, &state->sockets, next) {
+        if (socket->fd == fd) {
+            if (action == CURL_POLL_REMOVE) {
+                QLIST_REMOVE(socket, next);
+                g_free(socket);
+            }
+            break;
+        }
+    }
+    if (!socket) {
+        socket = g_new0(CURLSocket, 1);
+        socket->fd = fd;
+        QLIST_INSERT_HEAD(&state->sockets, socket, next);
+    }
+    socket = NULL;
+
+    DPRINTF("CURL (AIO): Sock action %d on fd %d\n", action, (int)fd);
     switch (action) {
         case CURL_POLL_IN:
-            aio_set_fd_handler(s->aio_context, fd, curl_multi_read,
-                               NULL, state);
+            aio_set_fd_handler(s->aio_context, fd, false,
+                               curl_multi_read, NULL, state);
             break;
         case CURL_POLL_OUT:
-            aio_set_fd_handler(s->aio_context, fd, NULL, curl_multi_do, state);
+            aio_set_fd_handler(s->aio_context, fd, false,
+                               NULL, curl_multi_do, state);
             break;
         case CURL_POLL_INOUT:
-            aio_set_fd_handler(s->aio_context, fd, curl_multi_read,
-                               curl_multi_do, state);
+            aio_set_fd_handler(s->aio_context, fd, false,
+                               curl_multi_read, curl_multi_do, state);
             break;
         case CURL_POLL_REMOVE:
-            aio_set_fd_handler(s->aio_context, fd, NULL, NULL, NULL);
+            aio_set_fd_handler(s->aio_context, fd, false,
+                               NULL, NULL, NULL);
             break;
     }
 
@@ -194,12 +235,13 @@ static size_t curl_read_cb(void *ptr, size_t size, size_t nmemb, void *opaque)
 
     DPRINTF("CURL: Just reading %zd bytes\n", realsize);
 
-    if (!s || !s->orig_buf)
-        return 0;
+    if (!s || !s->orig_buf) {
+        goto read_end;
+    }
 
     if (s->buf_off >= s->buf_len) {
         /* buffer full, read nothing */
-        return 0;
+        goto read_end;
     }
     realsize = MIN(realsize, s->buf_len - s->buf_off);
     memcpy(s->orig_buf + s->buf_off, ptr, realsize);
@@ -212,15 +254,26 @@ static size_t curl_read_cb(void *ptr, size_t size, size_t nmemb, void *opaque)
             continue;
 
         if ((s->buf_off >= acb->end)) {
+            size_t request_length = acb->nb_sectors * BDRV_SECTOR_SIZE;
+
             qemu_iovec_from_buf(acb->qiov, 0, s->orig_buf + acb->start,
                                 acb->end - acb->start);
+
+            if (acb->end - acb->start < request_length) {
+                size_t offset = acb->end - acb->start;
+                qemu_iovec_memset(acb->qiov, offset, 0,
+                                  request_length - offset);
+            }
+
             acb->common.cb(acb->common.opaque, 0);
             qemu_aio_unref(acb);
             s->acb[i] = NULL;
         }
     }
 
-    return realsize;
+read_end:
+    /* curl will error out if we do not return this value */
+    return size * nmemb;
 }
 
 static int curl_find_buf(BDRVCURLState *s, size_t start, size_t len,
@@ -228,6 +281,8 @@ static int curl_find_buf(BDRVCURLState *s, size_t start, size_t len,
 {
     int i;
     size_t end = start + len;
+    size_t clamped_end = MIN(end, s->len);
+    size_t clamped_len = clamped_end - start;
 
     for (i=0; i<CURL_NUM_STATES; i++) {
         CURLState *state = &s->states[i];
@@ -242,12 +297,15 @@ static int curl_find_buf(BDRVCURLState *s, size_t start, size_t len,
         // Does the existing buffer cover our section?
         if ((start >= state->buf_start) &&
             (start <= buf_end) &&
-            (end >= state->buf_start) &&
-            (end <= buf_end))
+            (clamped_end >= state->buf_start) &&
+            (clamped_end <= buf_end))
         {
             char *buf = state->orig_buf + (start - state->buf_start);
 
-            qemu_iovec_from_buf(acb->qiov, 0, buf, len);
+            qemu_iovec_from_buf(acb->qiov, 0, buf, clamped_len);
+            if (clamped_len < len) {
+                qemu_iovec_memset(acb->qiov, clamped_len, 0, len - clamped_len);
+            }
             acb->common.cb(acb->common.opaque, 0);
 
             return FIND_RET_OK;
@@ -257,13 +315,13 @@ static int curl_find_buf(BDRVCURLState *s, size_t start, size_t len,
         if (state->in_use &&
             (start >= state->buf_start) &&
             (start <= buf_fend) &&
-            (end >= state->buf_start) &&
-            (end <= buf_fend))
+            (clamped_end >= state->buf_start) &&
+            (clamped_end <= buf_fend))
         {
             int j;
 
             acb->start = start - state->buf_start;
-            acb->end = acb->start + len;
+            acb->end = acb->start + clamped_len;
 
             for (j=0; j<CURL_NUM_ACB; j++) {
                 if (!state->acb[j]) {
@@ -333,6 +391,7 @@ static void curl_multi_check_completion(BDRVCURLState *s)
 static void curl_multi_do(void *arg)
 {
     CURLState *s = (CURLState *)arg;
+    CURLSocket *socket, *next_socket;
     int running;
     int r;
 
@@ -340,10 +399,13 @@ static void curl_multi_do(void *arg)
         return;
     }
 
-    do {
-        r = curl_multi_socket_action(s->s->multi, s->sock_fd, 0, &running);
-    } while(r == CURLM_CALL_MULTI_PERFORM);
-
+    /* Need to use _SAFE because curl_multi_socket_action() may trigger
+     * curl_sock_cb() which might modify this list */
+    QLIST_FOREACH_SAFE(socket, &s->sockets, next, next_socket) {
+        do {
+            r = curl_multi_socket_action(s->s->multi, socket->fd, 0, &running);
+        } while (r == CURLM_CALL_MULTI_PERFORM);
+    }
 }
 
 static void curl_multi_read(void *arg)
@@ -416,6 +478,21 @@ static CURLState *curl_init_state(BlockDriverState *bs, BDRVCURLState *s)
         curl_easy_setopt(state->curl, CURLOPT_ERRORBUFFER, state->errmsg);
         curl_easy_setopt(state->curl, CURLOPT_FAILONERROR, 1);
 
+        if (s->username) {
+            curl_easy_setopt(state->curl, CURLOPT_USERNAME, s->username);
+        }
+        if (s->password) {
+            curl_easy_setopt(state->curl, CURLOPT_PASSWORD, s->password);
+        }
+        if (s->proxyusername) {
+            curl_easy_setopt(state->curl,
+                             CURLOPT_PROXYUSERNAME, s->proxyusername);
+        }
+        if (s->proxypassword) {
+            curl_easy_setopt(state->curl,
+                             CURLOPT_PROXYPASSWORD, s->proxypassword);
+        }
+
         /* Restrict supported protocols to avoid security issues in the more
          * obscure protocols.  For example, do not allow POP3/SMTP/IMAP see
          * CVE-2013-0249.
@@ -432,6 +509,7 @@ static CURLState *curl_init_state(BlockDriverState *bs, BDRVCURLState *s)
 #endif
     }
 
+    QLIST_INIT(&state->sockets);
     state->s = s;
 
     return state;
@@ -441,6 +519,14 @@ static void curl_clean_state(CURLState *s)
 {
     if (s->s->multi)
         curl_multi_remove_handle(s->s->multi, s->curl);
+
+    while (!QLIST_EMPTY(&s->sockets)) {
+        CURLSocket *socket = QLIST_FIRST(&s->sockets);
+
+        QLIST_REMOVE(socket, next);
+        g_free(socket);
+    }
+
     s->in_use = 0;
 }
 
@@ -522,9 +608,30 @@ static QemuOptsList runtime_opts = {
             .type = QEMU_OPT_STRING,
             .help = "Pass the cookie or list of cookies with each request"
         },
+        {
+            .name = CURL_BLOCK_OPT_USERNAME,
+            .type = QEMU_OPT_STRING,
+            .help = "Username for HTTP auth"
+        },
+        {
+            .name = CURL_BLOCK_OPT_PASSWORD_SECRET,
+            .type = QEMU_OPT_STRING,
+            .help = "ID of secret used as password for HTTP auth",
+        },
+        {
+            .name = CURL_BLOCK_OPT_PROXY_USERNAME,
+            .type = QEMU_OPT_STRING,
+            .help = "Username for HTTP proxy auth"
+        },
+        {
+            .name = CURL_BLOCK_OPT_PROXY_PASSWORD_SECRET,
+            .type = QEMU_OPT_STRING,
+            .help = "ID of secret used as password for HTTP proxy auth",
+        },
         { /* end of list */ }
     },
 };
+
 
 static int curl_open(BlockDriverState *bs, QDict *options, int flags,
                      Error **errp)
@@ -536,6 +643,7 @@ static int curl_open(BlockDriverState *bs, QDict *options, int flags,
     const char *file;
     const char *cookie;
     double d;
+    const char *secretid;
 
     static int inited = 0;
 
@@ -575,6 +683,26 @@ static int curl_open(BlockDriverState *bs, QDict *options, int flags,
     if (file == NULL) {
         error_setg(errp, "curl block driver requires an 'url' option");
         goto out_noclean;
+    }
+
+    s->username = g_strdup(qemu_opt_get(opts, CURL_BLOCK_OPT_USERNAME));
+    secretid = qemu_opt_get(opts, CURL_BLOCK_OPT_PASSWORD_SECRET);
+
+    if (secretid) {
+        s->password = qcrypto_secret_lookup_as_utf8(secretid, errp);
+        if (!s->password) {
+            goto out_noclean;
+        }
+    }
+
+    s->proxyusername = g_strdup(
+        qemu_opt_get(opts, CURL_BLOCK_OPT_PROXY_USERNAME));
+    secretid = qemu_opt_get(opts, CURL_BLOCK_OPT_PROXY_PASSWORD_SECRET);
+    if (secretid) {
+        s->proxypassword = qcrypto_secret_lookup_as_utf8(secretid, errp);
+        if (!s->proxypassword) {
+            goto out_noclean;
+        }
     }
 
     if (!inited) {
@@ -648,12 +776,12 @@ static void curl_readv_bh_cb(void *p)
     qemu_bh_delete(acb->bh);
     acb->bh = NULL;
 
-    size_t start = acb->sector_num * SECTOR_SIZE;
+    size_t start = acb->sector_num * BDRV_SECTOR_SIZE;
     size_t end;
 
     // In case we have the requested data already (e.g. read-ahead),
     // we can just call the callback and be done.
-    switch (curl_find_buf(s, start, acb->nb_sectors * SECTOR_SIZE, acb)) {
+    switch (curl_find_buf(s, start, acb->nb_sectors * BDRV_SECTOR_SIZE, acb)) {
         case FIND_RET_OK:
             qemu_aio_unref(acb);
             // fall through
@@ -672,13 +800,13 @@ static void curl_readv_bh_cb(void *p)
     }
 
     acb->start = 0;
-    acb->end = (acb->nb_sectors * SECTOR_SIZE);
+    acb->end = MIN(acb->nb_sectors * BDRV_SECTOR_SIZE, s->len - start);
 
     state->buf_off = 0;
     g_free(state->orig_buf);
     state->buf_start = start;
-    state->buf_len = acb->end + s->readahead_size;
-    end = MIN(start + state->buf_len, s->len) - 1;
+    state->buf_len = MIN(acb->end + s->readahead_size, s->len - start);
+    end = start + state->buf_len - 1;
     state->orig_buf = g_try_malloc(state->buf_len);
     if (state->buf_len && state->orig_buf == NULL) {
         curl_clean_state(state);
@@ -689,8 +817,8 @@ static void curl_readv_bh_cb(void *p)
     state->acb[0] = acb;
 
     snprintf(state->range, 127, "%zd-%zd", start, end);
-    DPRINTF("CURL (AIO): Reading %d at %zd (%s)\n",
-            (acb->nb_sectors * SECTOR_SIZE), start, state->range);
+    DPRINTF("CURL (AIO): Reading %llu at %zd (%s)\n",
+            (acb->nb_sectors * BDRV_SECTOR_SIZE), start, state->range);
     curl_easy_setopt(state->curl, CURLOPT_RANGE, state->range);
 
     curl_multi_add_handle(s->multi, state->curl);

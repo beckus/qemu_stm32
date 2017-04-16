@@ -10,11 +10,10 @@
  * See the COPYING file in the top-level directory.
  */
 
+#include "qemu/osdep.h"
 #include "libqos/malloc.h"
 #include "qemu-common.h"
-#include <stdio.h>
-#include <inttypes.h>
-#include <glib.h>
+#include "qemu/host-utils.h"
 
 typedef QTAILQ_HEAD(MemList, MemBlock) MemList;
 
@@ -269,6 +268,10 @@ uint64_t guest_alloc(QGuestAllocator *allocator, size_t size)
 {
     uint64_t rsize = size;
     uint64_t naddr;
+
+    if (!size) {
+        return 0;
+    }
 
     rsize += (allocator->page_size - 1);
     rsize &= -allocator->page_size;

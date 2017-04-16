@@ -22,6 +22,7 @@
  * TPM Profile (PTP) Specification, Familiy 2.0, Revision 00.43
  */
 
+#include "qemu/osdep.h"
 #include "sysemu/tpm_backend.h"
 #include "tpm_int.h"
 #include "sysemu/block-backend.h"
@@ -30,6 +31,7 @@
 #include "hw/i386/pc.h"
 #include "hw/pci/pci_ids.h"
 #include "tpm_tis.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/main-loop.h"
 #include "sysemu/tpm_backend.h"
@@ -141,7 +143,7 @@
 
 #define TPM_TIS_IFACE_ID_SUPPORTED_FLAGS1_3 \
     (TPM_TIS_IFACE_ID_INTERFACE_TIS1_3 | \
-     (~0 << 4)/* all of it is don't care */)
+     (~0u << 4)/* all of it is don't care */)
 
 /* if backend was a TPM 2.0: */
 #define TPM_TIS_IFACE_ID_SUPPORTED_FLAGS2_0 \
@@ -1051,7 +1053,7 @@ static void tpm_tis_realizefn(DeviceState *dev, Error **errp)
 
     if (tis->irq_num > 15) {
         error_setg(errp, "tpm_tis: IRQ %d for TPM TIS is outside valid range "
-                   "of 0 to 15.\n", tis->irq_num);
+                   "of 0 to 15", tis->irq_num);
         return;
     }
 

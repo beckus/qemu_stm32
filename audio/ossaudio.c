@@ -21,9 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include <stdlib.h>
-#include <sys/mman.h>
-#include <sys/types.h>
+#include "qemu/osdep.h"
 #include <sys/ioctl.h>
 #include <sys/soundcard.h>
 #include "qemu-common.h"
@@ -899,7 +897,7 @@ static struct audio_option oss_options[] = {
         .name  = "EXCLUSIVE",
         .tag   = AUD_OPT_BOOL,
         .valp  = &glob_conf.exclusive,
-        .descr = "Open device in exclusive mode (vmix wont work)"
+        .descr = "Open device in exclusive mode (vmix won't work)"
     },
 #ifdef USE_DSP_POLICY
     {

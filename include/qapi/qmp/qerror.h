@@ -19,9 +19,6 @@
 #define QERR_BASE_NOT_FOUND \
     "Base '%s' not found"
 
-#define QERR_BLOCK_JOB_NOT_READY \
-    "The active block job for device '%s' cannot be completed"
-
 #define QERR_BUS_NO_HOTPLUG \
     "Bus '%s' does not support hotplugging"
 
@@ -100,10 +97,10 @@
 #define QERR_UNDEFINED_ERROR \
     "An undefined error has occurred"
 
-#define QERR_UNKNOWN_BLOCK_FORMAT_FEATURE \
-    "'%s' uses a %s feature which is not supported by this qemu version: %s"
-
 #define QERR_UNSUPPORTED \
     "this feature or command is not currently supported"
+
+#define QERR_REPLAY_NOT_SUPPORTED \
+    "Record/replay feature is not supported for '%s'"
 
 #endif /* QERROR_H */

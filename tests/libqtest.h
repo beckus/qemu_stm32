@@ -17,17 +17,27 @@
 #ifndef LIBQTEST_H
 #define LIBQTEST_H
 
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <stdarg.h>
-#include <sys/types.h>
 #include "qapi/qmp/qdict.h"
-#include "glib-compat.h"
 
 typedef struct QTestState QTestState;
 
 extern QTestState *global_qtest;
+
+typedef int gpio_id;
+
+/* When running a QTest program stand-alone, the following environment variables
+ * may be set:
+ *
+ * Mandatory:
+ *  QTEST_QEMU_BINARY: The QEMU binary to use.  It is set automatically when
+ *                     running "make check".
+ *                     (e.g. "../arm-softmmu/qemu-system-arm")
+ *
+ * Optional:
+ *  QTEST_QEMU_ARGS:   Extra arguments to pass to QEMU (e.g. "-d").
+ *  QTEST_LOG_FILE:    A file to which QTest log messages should be written
+ *                     (e.g. "/tmp/qtest.log").
+ */
 
 /**
  * qtest_init:
@@ -35,7 +45,7 @@ extern QTestState *global_qtest;
  *
  * Returns: #QTestState instance.
  */
-QTestState *qtest_init(const char *extra_args);
+QTestState *qtest_init(const char *extra_args,  int num_serial_ports);
 
 /**
  * qtest_quit:
@@ -120,6 +130,29 @@ QDict *qtest_qmp_receive(QTestState *s);
 void qtest_qmp_eventwait(QTestState *s, const char *event);
 
 /**
+ * qtest_hmpv:
+ * @s: #QTestState instance to operate on.
+ * @fmt...: HMP command to send to QEMU
+ *
+ * Send HMP command to QEMU via QMP's human-monitor-command.
+ *
+ * Returns: the command's output.  The caller should g_free() it.
+ */
+char *qtest_hmp(QTestState *s, const char *fmt, ...);
+
+/**
+ * qtest_hmpv:
+ * @s: #QTestState instance to operate on.
+ * @fmt: HMP command to send to QEMU
+ * @ap: HMP command arguments
+ *
+ * Send HMP command to QEMU via QMP's human-monitor-command.
+ *
+ * Returns: the command's output.  The caller should g_free() it.
+ */
+char *qtest_hmpv(QTestState *s, const char *fmt, va_list ap);
+
+/**
  * qtest_get_irq:
  * @s: #QTestState instance to operate on.
  * @num: Interrupt to observe.
@@ -129,14 +162,25 @@ void qtest_qmp_eventwait(QTestState *s, const char *event);
 bool qtest_get_irq(QTestState *s, int num);
 
 /**
+ * qtest_get_irq_for_gpio:
+ * @s: #QTestState instance to operate on.
+ * @id: GPIO to operate on (see qtest_irq_intercept_in/out).
+ * @num: Interrupt to observe.
+ *
+ * Returns: The level of the @num interrupt.
+ */
+bool qtest_get_irq_for_gpio(QTestState *s, gpio_id id, int num);
+
+/**
  * qtest_irq_intercept_in:
  * @s: #QTestState instance to operate on.
  * @string: QOM path of a device.
  *
  * Associate qtest irqs with the GPIO-in pins of the device
  * whose path is specified by @string.
+ * Returns an id value that can be used when calling qtest_get_irq.
  */
-void qtest_irq_intercept_in(QTestState *s, const char *string);
+gpio_id qtest_irq_intercept_in(QTestState *s, const char *string);
 
 /**
  * qtest_irq_intercept_out:
@@ -145,8 +189,46 @@ void qtest_irq_intercept_in(QTestState *s, const char *string);
  *
  * Associate qtest irqs with the GPIO-out pins of the device
  * whose path is specified by @string.
+ * Returns an id value that can be used when calling qtest_get_irq.
  */
-void qtest_irq_intercept_out(QTestState *s, const char *string);
+gpio_id qtest_irq_intercept_out(QTestState *s, const char *string);
+
+/**
+ * qtest_set_irq_in:
+ * @s: #QTestState instance to operate on.
+ * @string: QOM path of a device.
+ * @num: Interrupt to set (specifies a GPIO-in pin)
+ * @level: new IRQ level
+ *
+ * Sets the GPIO-in pin level of the device whose path is specified by @string.
+ */
+void qtest_set_irq_in(QTestState *s, const char *string, int num, int level);
+
+/**
+ * write_serial_port:
+ * @s: #QTestState instance to operate on.
+ * @serial_port_num: Indicates the serial port to write to
+ *                   (see qtest_start_with_serial).
+ * @fmt: The printf style format string to write.
+ *
+ * Sends a string to the specified virtual serial port.
+ */
+void qtest_write_serial_port(QTestState *s,
+                             int serial_port_num,
+                             const char *fmt, ...);
+
+/**
+ * read_serial_port_byte:
+ * @s: #QTestState instance to operate on.
+ * @serial_port_num: Indicates the serial port to read from
+ *                   (see qtest_start_with_serial).
+ *
+ * Reads an byte (8-bit value) from the specified virtual serial port.
+ * If there is no byte to read, an assertion failure will occur.
+ *
+ * Returns: Value read.
+ */
+uint8_t qtest_read_serial_port_byte(QTestState *s, int serial_port_num);
 
 /**
  * qtest_outb:
@@ -393,7 +475,7 @@ const char *qtest_get_arch(void);
  * The path is prefixed with the architecture under test, as
  * returned by qtest_get_arch().
  */
-void qtest_add_func(const char *str, void (*fn));
+void qtest_add_func(const char *str, void (*fn)(void));
 
 /**
  * qtest_add_data_func:
@@ -405,7 +487,8 @@ void qtest_add_func(const char *str, void (*fn));
  * The path is prefixed with the architecture under test, as
  * returned by qtest_get_arch().
  */
-void qtest_add_data_func(const char *str, const void *data, void (*fn));
+void qtest_add_data_func(const char *str, const void *data,
+                         void (*fn)(const void *));
 
 /**
  * qtest_add:
@@ -427,6 +510,8 @@ void qtest_add_data_func(const char *str, const void *data, void (*fn));
         g_free(path); \
     } while (0)
 
+void qtest_add_abrt_handler(GHookFunc fn, const void *data);
+
 /**
  * qtest_start:
  * @args: other arguments to pass to QEMU
@@ -438,7 +523,29 @@ void qtest_add_data_func(const char *str, const void *data, void (*fn));
  */
 static inline QTestState *qtest_start(const char *args)
 {
-    global_qtest = qtest_init(args);
+    global_qtest = qtest_init(args, 0);
+    return global_qtest;
+}
+
+/**
+ * qtest_start_with_serial:
+ * @args: See qtest_start
+ * @num_sockets: number of extra sockets to
+ *
+ * Works the same way as qtest_start, except creates a connection to the
+ * specified number of virtual serial ports.
+ *
+ * Use write_serial_port and read_serial_port_byte to communicate via these
+ * connections.  These functions require a serial port number.  The serial
+ * ports are numbered in the same order that they are specified on
+ * the QEMU command line (using the -serial option).  The first serial port
+ * specified on the command line is numbered 0, the second port is numbered 1,
+ * and so on.
+ */
+static inline QTestState *qtest_start_with_serial(const char *args,
+                                                  int num_serial_ports)
+{
+    global_qtest = qtest_init(args, num_serial_ports);
     return global_qtest;
 }
 
@@ -499,6 +606,16 @@ static inline void qmp_eventwait(const char *event)
 }
 
 /**
+ * hmp:
+ * @fmt...: HMP command to send to QEMU
+ *
+ * Send HMP command to QEMU via QMP's human-monitor-command.
+ *
+ * Returns: the command's output.  The caller should g_free() it.
+ */
+char *hmp(const char *fmt, ...);
+
+/**
  * get_irq:
  * @num: Interrupt to observe.
  *
@@ -507,6 +624,18 @@ static inline void qmp_eventwait(const char *event)
 static inline bool get_irq(int num)
 {
     return qtest_get_irq(global_qtest, num);
+}
+
+/**
+ * get_irq_for_gpio:
+ * @id: GPIO to operate on (see qtest_irq_intercept_in/out).
+ * @num: Interrupt to observe.
+ *
+ * Returns: The level of the @num interrupt.
+ */
+static inline bool get_irq_for_gpio(gpio_id id, int num)
+{
+    return qtest_get_irq_for_gpio(global_qtest, id, num);
 }
 
 /**
@@ -531,6 +660,44 @@ static inline void irq_intercept_in(const char *string)
 static inline void irq_intercept_out(const char *string)
 {
     qtest_irq_intercept_out(global_qtest, string);
+}
+
+/**
+ * set_irq_in:
+ * @string: QOM path of a device.
+ * @num: Interrupt to set (specifies a GPIO-in pin)
+ * @level: new IRQ level
+ *
+ * Sets the GPIO-in pin level of the device whose path is specified by @string.
+ */
+static inline void set_irq_in(const char *string, int num, int level)
+{
+    qtest_set_irq_in(global_qtest, string, num, level);
+}
+
+/**
+ * write_serial_port:
+ * @serial_port_num: Indicates the serial port to write to
+ *                   (see qtest_start_with_serial).
+ * @fmt: The printf style format string to write.
+ *
+ * Sends a string to the specified virtual serial port.
+ */
+void write_serial_port(int serial_port_num, const char *fmt, ...);
+
+/**
+ * read_serial_port_byte:
+ * @serial_port_num: Indicates the serial port to read from
+ *                   (see qtest_start_with_serial).
+ *
+ * Reads an byte (8-bit value) from the specified virtual serial port.
+ * If there is no byte to read, an assertion failure will occur.
+ *
+ * Returns: Value read.
+ */
+static inline uint8_t read_serial_port_byte(int serial_port_num)
+{
+    return qtest_read_serial_port_byte(global_qtest, serial_port_num);
 }
 
 /**
@@ -817,5 +984,12 @@ static inline int64_t clock_set(int64_t val)
  * Returns: True if the architecture under test has a big endian configuration.
  */
 bool qtest_big_endian(void);
+
+
+QDict *qmp_fd_receive(int fd);
+void qmp_fd_sendv(int fd, const char *fmt, va_list ap);
+void qmp_fd_send(int fd, const char *fmt, ...);
+QDict *qmp_fdv(int fd, const char *fmt, va_list ap);
+QDict *qmp_fd(int fd, const char *fmt, ...);
 
 #endif

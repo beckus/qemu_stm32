@@ -16,11 +16,12 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _CPU_SH4_H
-#define _CPU_SH4_H
 
-#include "config.h"
+#ifndef SH4_CPU_H
+#define SH4_CPU_H
+
 #include "qemu-common.h"
+#include "cpu-qom.h"
 
 #define TARGET_LONG_BITS 32
 
@@ -188,11 +189,39 @@ typedef struct CPUSH4State {
     memory_content **movcal_backup_tail;
 } CPUSH4State;
 
-#include "cpu-qom.h"
+/**
+ * SuperHCPU:
+ * @env: #CPUSH4State
+ *
+ * A SuperH CPU.
+ */
+struct SuperHCPU {
+    /*< private >*/
+    CPUState parent_obj;
+    /*< public >*/
+
+    CPUSH4State env;
+};
+
+static inline SuperHCPU *sh_env_get_cpu(CPUSH4State *env)
+{
+    return container_of(env, SuperHCPU, env);
+}
+
+#define ENV_GET_CPU(e) CPU(sh_env_get_cpu(e))
+
+#define ENV_OFFSET offsetof(SuperHCPU, env)
+
+void superh_cpu_do_interrupt(CPUState *cpu);
+bool superh_cpu_exec_interrupt(CPUState *cpu, int int_req);
+void superh_cpu_dump_state(CPUState *cpu, FILE *f,
+                           fprintf_function cpu_fprintf, int flags);
+hwaddr superh_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+int superh_cpu_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg);
+int superh_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
 
 void sh4_translate_init(void);
 SuperHCPU *cpu_sh4_init(const char *cpu_model);
-int cpu_sh4_exec(CPUState *s);
 int cpu_sh4_signal_handler(int host_signum, void *pinfo,
                            void *puc);
 int superh_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int rw,
@@ -225,7 +254,6 @@ void cpu_load_tlb(CPUSH4State * env);
 
 #define cpu_init(cpu_model) CPU(cpu_sh4_init(cpu_model))
 
-#define cpu_exec cpu_sh4_exec
 #define cpu_signal_handler cpu_sh4_signal_handler
 #define cpu_list sh4_cpu_list
 
@@ -348,7 +376,7 @@ static inline void cpu_write_sr(CPUSH4State *env, target_ulong sr)
 }
 
 static inline void cpu_get_tb_cpu_state(CPUSH4State *env, target_ulong *pc,
-                                        target_ulong *cs_base, int *flags)
+                                        target_ulong *cs_base, uint32_t *flags)
 {
     *pc = env->pc;
     *cs_base = 0;
@@ -360,6 +388,4 @@ static inline void cpu_get_tb_cpu_state(CPUSH4State *env, target_ulong *pc,
             | (env->movcal_backup ? TB_FLAG_PENDING_MOVCA : 0); /* Bit 4 */
 }
 
-#include "exec/exec-all.h"
-
-#endif				/* _CPU_SH4_H */
+#endif /* SH4_CPU_H */

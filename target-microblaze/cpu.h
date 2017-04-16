@@ -16,11 +16,12 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef CPU_MICROBLAZE_H
-#define CPU_MICROBLAZE_H
 
-#include "config.h"
+#ifndef MICROBLAZE_CPU_H
+#define MICROBLAZE_CPU_H
+
 #include "qemu-common.h"
+#include "cpu-qom.h"
 
 #define TARGET_LONG_BITS 32
 
@@ -275,11 +276,52 @@ struct CPUMBState {
     } pvr;
 };
 
-#include "cpu-qom.h"
+/**
+ * MicroBlazeCPU:
+ * @env: #CPUMBState
+ *
+ * A MicroBlaze CPU.
+ */
+struct MicroBlazeCPU {
+    /*< private >*/
+    CPUState parent_obj;
+
+    /*< public >*/
+
+    /* Microblaze Configuration Settings */
+    struct {
+        bool stackprot;
+        uint32_t base_vectors;
+        uint8_t use_fpu;
+        bool use_mmu;
+        bool dcache_writeback;
+        bool endi;
+        char *version;
+        uint8_t pvr;
+    } cfg;
+
+    CPUMBState env;
+};
+
+static inline MicroBlazeCPU *mb_env_get_cpu(CPUMBState *env)
+{
+    return container_of(env, MicroBlazeCPU, env);
+}
+
+#define ENV_GET_CPU(e) CPU(mb_env_get_cpu(e))
+
+#define ENV_OFFSET offsetof(MicroBlazeCPU, env)
+
+void mb_cpu_do_interrupt(CPUState *cs);
+bool mb_cpu_exec_interrupt(CPUState *cs, int int_req);
+void mb_cpu_dump_state(CPUState *cpu, FILE *f, fprintf_function cpu_fprintf,
+                       int flags);
+hwaddr mb_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+int mb_cpu_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg);
+int mb_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
 
 void mb_tcg_init(void);
 MicroBlazeCPU *cpu_mb_init(const char *cpu_model);
-int cpu_mb_exec(CPUState *cpu);
 /* you can call this signal handler from your SIGBUS and SIGSEGV
    signal handlers to inform the virtual CPU of exceptions. non zero
    is returned if the signal was handled by the virtual CPU.  */
@@ -294,7 +336,6 @@ int cpu_mb_signal_handler(int host_signum, void *pinfo,
 
 #define cpu_init(cpu_model) CPU(cpu_mb_init(cpu_model))
 
-#define cpu_exec cpu_mb_exec
 #define cpu_signal_handler cpu_mb_signal_handler
 
 /* MMU modes definitions */
@@ -323,7 +364,7 @@ int mb_cpu_handle_mmu_fault(CPUState *cpu, vaddr address, int rw,
 #include "exec/cpu-all.h"
 
 static inline void cpu_get_tb_cpu_state(CPUMBState *env, target_ulong *pc,
-                                        target_ulong *cs_base, int *flags)
+                                        target_ulong *cs_base, uint32_t *flags)
 {
     *pc = env->sregs[SR_PC];
     *cs_base = 0;
@@ -336,7 +377,5 @@ void mb_cpu_unassigned_access(CPUState *cpu, hwaddr addr,
                               bool is_write, bool is_exec, int is_asi,
                               unsigned size);
 #endif
-
-#include "exec/exec-all.h"
 
 #endif

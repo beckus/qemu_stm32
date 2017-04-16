@@ -18,21 +18,22 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/memory.h"
 #include "qemu/host-utils.h"
 #include "exec/helper-proto.h"
-#include <string.h>
 #include "sysemu/kvm.h"
 #include "qemu/timer.h"
 #include "exec/address-spaces.h"
 #ifdef CONFIG_KVM
 #include <linux/kvm.h>
 #endif
+#include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
-#include "hw/watchdog/wdt_diag288.h"
 
 #if !defined(CONFIG_USER_ONLY)
+#include "hw/watchdog/wdt_diag288.h"
 #include "sysemu/cpus.h"
 #include "sysemu/sysemu.h"
 #include "hw/s390x/ebcdic.h"
@@ -127,8 +128,9 @@ static int modified_clear_reset(S390CPU *cpu)
     CPU_FOREACH(t) {
         run_on_cpu(t, s390_do_cpu_full_reset, t);
     }
-    cmma_reset(cpu);
+    s390_cmma_reset();
     subsystem_reset();
+    s390_crypto_reset();
     scc->load_normal(CPU(cpu));
     cpu_synchronize_all_post_reset();
     resume_all_vcpus();
@@ -145,7 +147,7 @@ static int load_normal_reset(S390CPU *cpu)
     CPU_FOREACH(t) {
         run_on_cpu(t, s390_do_cpu_reset, t);
     }
-    cmma_reset(cpu);
+    s390_cmma_reset();
     subsystem_reset();
     scc->initial_cpu_reset(CPU(cpu));
     scc->load_normal(CPU(cpu));
@@ -231,13 +233,23 @@ void handle_diag_308(CPUS390XState *env, uint64_t r1, uint64_t r3)
             program_interrupt(env, PGM_ADDRESSING, ILEN_LATER_INC);
             return;
         }
-        iplb = g_malloc0(sizeof(struct IplParameterBlock));
-        cpu_physical_memory_read(addr, iplb, sizeof(struct IplParameterBlock));
-        if (!s390_ipl_update_diag308(iplb)) {
-            env->regs[r1 + 1] = DIAG_308_RC_OK;
-        } else {
+        iplb = g_malloc0(sizeof(IplParameterBlock));
+        cpu_physical_memory_read(addr, iplb, sizeof(iplb->len));
+        if (!iplb_valid_len(iplb)) {
             env->regs[r1 + 1] = DIAG_308_RC_INVALID;
+            goto out;
         }
+
+        cpu_physical_memory_read(addr, iplb, be32_to_cpu(iplb->len));
+
+        if (!iplb_valid_ccw(iplb) && !iplb_valid_fcp(iplb)) {
+            env->regs[r1 + 1] = DIAG_308_RC_INVALID;
+            goto out;
+        }
+
+        s390_ipl_update_diag308(iplb);
+        env->regs[r1 + 1] = DIAG_308_RC_OK;
+out:
         g_free(iplb);
         return;
     case 6:
@@ -252,8 +264,7 @@ void handle_diag_308(CPUS390XState *env, uint64_t r1, uint64_t r3)
         }
         iplb = s390_ipl_get_iplb();
         if (iplb) {
-            cpu_physical_memory_write(addr, iplb,
-                                      sizeof(struct IplParameterBlock));
+            cpu_physical_memory_write(addr, iplb, be32_to_cpu(iplb->len));
             env->regs[r1 + 1] = DIAG_308_RC_OK;
         } else {
             env->regs[r1 + 1] = DIAG_308_RC_NO_CONF;
@@ -301,7 +312,7 @@ void HELPER(spx)(CPUS390XState *env, uint64_t a1)
     uint32_t prefix = a1 & 0x7fffe000;
 
     env->psa = prefix;
-    qemu_log("prefix: %#x\n", prefix);
+    HELPER_LOG("prefix: %#x\n", prefix);
     tlb_flush_page(cs, 0);
     tlb_flush_page(cs, TARGET_PAGE_SIZE);
 }

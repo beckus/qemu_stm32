@@ -21,17 +21,18 @@
  *
  */
 
-#include <hw/hw.h>
-#include <hw/pci/msi.h>
-#include <hw/i386/pc.h>
-#include <hw/pci/pci.h>
+#include "qemu/osdep.h"
+#include "hw/hw.h"
+#include "hw/pci/msi.h"
+#include "hw/i386/pc.h"
+#include "hw/pci/pci.h"
 
 #include "qemu/error-report.h"
 #include "sysemu/block-backend.h"
 #include "sysemu/dma.h"
-#include "internal.h"
-#include <hw/ide/pci.h>
-#include <hw/ide/ahci.h>
+#include "hw/ide/internal.h"
+#include "hw/ide/pci.h"
+#include "hw/ide/ahci.h"
 
 #define DEBUG_AHCI 0
 
@@ -198,52 +199,38 @@ static void map_page(AddressSpace *as, uint8_t **ptr, uint64_t addr,
  * Check the cmd register to see if we should start or stop
  * the DMA or FIS RX engines.
  *
- * @ad: Device to engage.
- * @allow_stop: Allow device to transition from started to stopped?
- *   'no' is useful for migration post_load, which does not expect a transition.
+ * @ad: Device to dis/engage.
  *
  * @return 0 on success, -1 on error.
  */
-static int ahci_cond_start_engines(AHCIDevice *ad, bool allow_stop)
+static int ahci_cond_start_engines(AHCIDevice *ad)
 {
     AHCIPortRegs *pr = &ad->port_regs;
+    bool cmd_start = pr->cmd & PORT_CMD_START;
+    bool cmd_on    = pr->cmd & PORT_CMD_LIST_ON;
+    bool fis_start = pr->cmd & PORT_CMD_FIS_RX;
+    bool fis_on    = pr->cmd & PORT_CMD_FIS_ON;
 
-    if (pr->cmd & PORT_CMD_START) {
-        if (ahci_map_clb_address(ad)) {
-            pr->cmd |= PORT_CMD_LIST_ON;
-        } else {
+    if (cmd_start && !cmd_on) {
+        if (!ahci_map_clb_address(ad)) {
+            pr->cmd &= ~PORT_CMD_START;
             error_report("AHCI: Failed to start DMA engine: "
                          "bad command list buffer address");
             return -1;
         }
-    } else if (pr->cmd & PORT_CMD_LIST_ON) {
-        if (allow_stop) {
-            ahci_unmap_clb_address(ad);
-            pr->cmd = pr->cmd & ~(PORT_CMD_LIST_ON);
-        } else {
-            error_report("AHCI: DMA engine should be off, "
-                         "but appears to still be running");
-            return -1;
-        }
+    } else if (!cmd_start && cmd_on) {
+        ahci_unmap_clb_address(ad);
     }
 
-    if (pr->cmd & PORT_CMD_FIS_RX) {
-        if (ahci_map_fis_address(ad)) {
-            pr->cmd |= PORT_CMD_FIS_ON;
-        } else {
+    if (fis_start && !fis_on) {
+        if (!ahci_map_fis_address(ad)) {
+            pr->cmd &= ~PORT_CMD_FIS_RX;
             error_report("AHCI: Failed to start FIS receive engine: "
                          "bad FIS receive buffer address");
             return -1;
         }
-    } else if (pr->cmd & PORT_CMD_FIS_ON) {
-        if (allow_stop) {
-            ahci_unmap_fis_address(ad);
-            pr->cmd = pr->cmd & ~(PORT_CMD_FIS_ON);
-        } else {
-            error_report("AHCI: FIS receive engine should be off, "
-                         "but appears to still be running");
-            return -1;
-        }
+    } else if (!fis_start && fis_on) {
+        ahci_unmap_fis_address(ad);
     }
 
     return 0;
@@ -285,8 +272,8 @@ static void  ahci_port_write(AHCIState *s, int port, int offset, uint32_t val)
             pr->cmd = (pr->cmd & PORT_CMD_RO_MASK) |
                       (val & ~(PORT_CMD_RO_MASK|PORT_CMD_ICC_MASK));
 
-            /* Check FIS RX and CLB engines, allow transition to false: */
-            ahci_cond_start_engines(&s->dev[port], true);
+            /* Check FIS RX and CLB engines */
+            ahci_cond_start_engines(&s->dev[port]);
 
             /* XXX usually the FIS would be pending on the bus here and
                    issuing deferred until the OS enables FIS receival.
@@ -378,17 +365,23 @@ static uint64_t ahci_mem_read(void *opaque, hwaddr addr, unsigned size)
     int ofst = addr - aligned;
     uint64_t lo = ahci_mem_read_32(opaque, aligned);
     uint64_t hi;
+    uint64_t val;
 
     /* if < 8 byte read does not cross 4 byte boundary */
     if (ofst + size <= 4) {
-        return lo >> (ofst * 8);
-    }
-    g_assert_cmpint(size, >, 1);
+        val = lo >> (ofst * 8);
+    } else {
+        g_assert_cmpint(size, >, 1);
 
-    /* If the 64bit read is unaligned, we will produce undefined
-     * results. AHCI does not support unaligned 64bit reads. */
-    hi = ahci_mem_read_32(opaque, aligned + 4);
-    return (hi << 32 | lo) >> (ofst * 8);
+        /* If the 64bit read is unaligned, we will produce undefined
+         * results. AHCI does not support unaligned 64bit reads. */
+        hi = ahci_mem_read_32(opaque, aligned + 4);
+        val = (hi << 32 | lo) >> (ofst * 8);
+    }
+
+    DPRINTF(-1, "addr=0x%" HWADDR_PRIx " val=0x%" PRIx64 ", size=%d\n",
+            addr, val, size);
+    return val;
 }
 
 
@@ -396,6 +389,9 @@ static void ahci_mem_write(void *opaque, hwaddr addr,
                            uint64_t val, unsigned size)
 {
     AHCIState *s = opaque;
+
+    DPRINTF(-1, "addr=0x%" HWADDR_PRIx " val=0x%" PRIx64 ", size=%d\n",
+            addr, val, size);
 
     /* Only aligned reads are allowed on AHCI */
     if (addr & 3) {
@@ -548,7 +544,7 @@ static void ahci_init_d2h(AHCIDevice *ad)
         ad->init_d2h_sent = true;
         /* We're emulating receiving the first Reg H2D Fis from the device;
          * Update the SIG register, but otherwise proceed as normal. */
-        pr->sig = (ide_state->hcyl << 24) |
+        pr->sig = ((uint32_t)ide_state->hcyl << 24) |
             (ide_state->lcyl << 16) |
             (ide_state->sector << 8) |
             (ide_state->nsector & 0xFF);
@@ -647,11 +643,22 @@ static bool ahci_map_fis_address(AHCIDevice *ad)
     AHCIPortRegs *pr = &ad->port_regs;
     map_page(ad->hba->as, &ad->res_fis,
              ((uint64_t)pr->fis_addr_hi << 32) | pr->fis_addr, 256);
-    return ad->res_fis != NULL;
+    if (ad->res_fis != NULL) {
+        pr->cmd |= PORT_CMD_FIS_ON;
+        return true;
+    }
+
+    pr->cmd &= ~PORT_CMD_FIS_ON;
+    return false;
 }
 
 static void ahci_unmap_fis_address(AHCIDevice *ad)
 {
+    if (ad->res_fis == NULL) {
+        DPRINTF(ad->port_no, "Attempt to unmap NULL FIS address\n");
+        return;
+    }
+    ad->port_regs.cmd &= ~PORT_CMD_FIS_ON;
     dma_memory_unmap(ad->hba->as, ad->res_fis, 256,
                      DMA_DIRECTION_FROM_DEVICE, 256);
     ad->res_fis = NULL;
@@ -663,11 +670,22 @@ static bool ahci_map_clb_address(AHCIDevice *ad)
     ad->cur_cmd = NULL;
     map_page(ad->hba->as, &ad->lst,
              ((uint64_t)pr->lst_addr_hi << 32) | pr->lst_addr, 1024);
-    return ad->lst != NULL;
+    if (ad->lst != NULL) {
+        pr->cmd |= PORT_CMD_LIST_ON;
+        return true;
+    }
+
+    pr->cmd &= ~PORT_CMD_LIST_ON;
+    return false;
 }
 
 static void ahci_unmap_clb_address(AHCIDevice *ad)
 {
+    if (ad->lst == NULL) {
+        DPRINTF(ad->port_no, "Attempt to unmap NULL CLB address\n");
+        return;
+    }
+    ad->port_regs.cmd &= ~PORT_CMD_LIST_ON;
     dma_memory_unmap(ad->hba->as, ad->lst, 1024,
                      DMA_DIRECTION_FROM_DEVICE, 1024);
     ad->lst = NULL;
@@ -804,8 +822,21 @@ static int prdt_tbl_entry_size(const AHCI_SG *tbl)
     return (le32_to_cpu(tbl->flags_size) & AHCI_PRDT_SIZE_MASK) + 1;
 }
 
+/**
+ * Fetch entries in a guest-provided PRDT and convert it into a QEMU SGlist.
+ * @ad: The AHCIDevice for whom we are building the SGList.
+ * @sglist: The SGList target to add PRD entries to.
+ * @cmd: The AHCI Command Header that describes where the PRDT is.
+ * @limit: The remaining size of the S/ATA transaction, in bytes.
+ * @offset: The number of bytes already transferred, in bytes.
+ *
+ * The AHCI PRDT can describe up to 256GiB. S/ATA only support transactions of
+ * up to 32MiB as of ATA8-ACS3 rev 1b, assuming a 512 byte sector size. We stop
+ * building the sglist from the PRDT as soon as we hit @limit bytes,
+ * which is <= INT32_MAX/2GiB.
+ */
 static int ahci_populate_sglist(AHCIDevice *ad, QEMUSGList *sglist,
-                                AHCICmdHdr *cmd, int64_t limit, int32_t offset)
+                                AHCICmdHdr *cmd, int64_t limit, uint64_t offset)
 {
     uint16_t opts = le16_to_cpu(cmd->opts);
     uint16_t prdtl = le16_to_cpu(cmd->prdtl);
@@ -822,14 +853,6 @@ static int ahci_populate_sglist(AHCIDevice *ad, QEMUSGList *sglist,
     int tbl_entry_size;
     IDEBus *bus = &ad->port;
     BusState *qbus = BUS(bus);
-
-    /*
-     * Note: AHCI PRDT can describe up to 256GiB. SATA/ATA only support
-     * transactions of up to 32MiB as of ATA8-ACS3 rev 1b, assuming a
-     * 512 byte sector size. We limit the PRDT in this implementation to
-     * a reasonably large 2GiB, which can accommodate the maximum transfer
-     * request for sector sizes up to 32K.
-     */
 
     if (!prdtl) {
         DPRINTF(ad->port_no, "no sg list given by guest: 0x%08x\n", opts);
@@ -880,13 +903,6 @@ static int ahci_populate_sglist(AHCIDevice *ad, QEMUSGList *sglist,
             qemu_sglist_add(sglist, le64_to_cpu(tbl[i].addr),
                             MIN(prdt_tbl_entry_size(&tbl[i]),
                                 limit - sglist->size));
-            if (sglist->size > INT32_MAX) {
-                error_report("AHCI Physical Region Descriptor Table describes "
-                             "more than 2 GiB.");
-                qemu_sglist_destroy(sglist);
-                r = -1;
-                goto out;
-            }
         }
     }
 
@@ -903,6 +919,8 @@ static void ncq_err(NCQTransferState *ncq_tfs)
     ide_state->error = ABRT_ERR;
     ide_state->status = READY_STAT | ERR_STAT;
     ncq_tfs->drive->port_regs.scr_err |= (1 << ncq_tfs->tag);
+    qemu_sglist_destroy(&ncq_tfs->sglist);
+    ncq_tfs->used = 0;
 }
 
 static void ncq_finish(NCQTransferState *ncq_tfs)
@@ -930,6 +948,7 @@ static void ncq_cb(void *opaque, int ret)
     NCQTransferState *ncq_tfs = (NCQTransferState *)opaque;
     IDEState *ide_state = &ncq_tfs->drive->port.ifs[0];
 
+    ncq_tfs->aiocb = NULL;
     if (ret == -ECANCELED) {
         return;
     }
@@ -989,7 +1008,9 @@ static void execute_ncq_command(NCQTransferState *ncq_tfs)
         dma_acct_start(ide_state->blk, &ncq_tfs->acct,
                        &ncq_tfs->sglist, BLOCK_ACCT_READ);
         ncq_tfs->aiocb = dma_blk_read(ide_state->blk, &ncq_tfs->sglist,
-                                      ncq_tfs->lba, ncq_cb, ncq_tfs);
+                                      ncq_tfs->lba << BDRV_SECTOR_BITS,
+                                      BDRV_SECTOR_SIZE,
+                                      ncq_cb, ncq_tfs);
         break;
     case WRITE_FPDMA_QUEUED:
         DPRINTF(port, "NCQ writing %d sectors to LBA %"PRId64", tag %d\n",
@@ -1001,12 +1022,13 @@ static void execute_ncq_command(NCQTransferState *ncq_tfs)
         dma_acct_start(ide_state->blk, &ncq_tfs->acct,
                        &ncq_tfs->sglist, BLOCK_ACCT_WRITE);
         ncq_tfs->aiocb = dma_blk_write(ide_state->blk, &ncq_tfs->sglist,
-                                       ncq_tfs->lba, ncq_cb, ncq_tfs);
+                                       ncq_tfs->lba << BDRV_SECTOR_BITS,
+                                       BDRV_SECTOR_SIZE,
+                                       ncq_cb, ncq_tfs);
         break;
     default:
         DPRINTF(port, "error: unsupported NCQ command (0x%02x) received\n",
                 ncq_tfs->cmd);
-        qemu_sglist_destroy(&ncq_tfs->sglist);
         ncq_err(ncq_tfs);
     }
 }
@@ -1073,7 +1095,6 @@ static void process_ncq_command(AHCIState *s, int port, uint8_t *cmd_fis,
         error_report("ahci: PRDT length for NCQ command (0x%zx) "
                      "is smaller than the requested size (0x%zx)",
                      ncq_tfs->sglist.size, size);
-        qemu_sglist_destroy(&ncq_tfs->sglist);
         ncq_err(ncq_tfs);
         ahci_trigger_irq(ad->hba, ad, PORT_IRQ_OVERFLOW);
         return;
@@ -1427,7 +1448,17 @@ static const IDEDMAOps ahci_dma_ops = {
     .cmd_done = ahci_cmd_done,
 };
 
-void ahci_init(AHCIState *s, DeviceState *qdev, AddressSpace *as, int ports)
+void ahci_init(AHCIState *s, DeviceState *qdev)
+{
+    s->container = qdev;
+    /* XXX BAR size should be 1k, but that breaks, so bump it to 4k for now */
+    memory_region_init_io(&s->mem, OBJECT(qdev), &ahci_mem_ops, s,
+                          "ahci", AHCI_MEM_BAR_SIZE);
+    memory_region_init_io(&s->idp, OBJECT(qdev), &ahci_idp_ops, s,
+                          "ahci-idp", 32);
+}
+
+void ahci_realize(AHCIState *s, DeviceState *qdev, AddressSpace *as, int ports)
 {
     qemu_irq *irqs;
     int i;
@@ -1435,16 +1466,8 @@ void ahci_init(AHCIState *s, DeviceState *qdev, AddressSpace *as, int ports)
     s->as = as;
     s->ports = ports;
     s->dev = g_new0(AHCIDevice, ports);
-    s->container = qdev;
     ahci_reg_init(s);
-    /* XXX BAR size should be 1k, but that breaks, so bump it to 4k for now */
-    memory_region_init_io(&s->mem, OBJECT(qdev), &ahci_mem_ops, s,
-                          "ahci", AHCI_MEM_BAR_SIZE);
-    memory_region_init_io(&s->idp, OBJECT(qdev), &ahci_idp_ops, s,
-                          "ahci-idp", 32);
-
     irqs = qemu_allocate_irqs(ahci_irq_set, s, s->ports);
-
     for (i = 0; i < s->ports; i++) {
         AHCIDevice *ad = &s->dev[i];
 
@@ -1457,6 +1480,7 @@ void ahci_init(AHCIState *s, DeviceState *qdev, AddressSpace *as, int ports)
         ad->port.dma->ops = &ahci_dma_ops;
         ide_register_restart_cb(&ad->port);
     }
+    g_free(irqs);
 }
 
 void ahci_uninit(AHCIState *s)
@@ -1541,14 +1565,28 @@ static int ahci_state_post_load(void *opaque, int version_id)
     int i, j;
     struct AHCIDevice *ad;
     NCQTransferState *ncq_tfs;
+    AHCIPortRegs *pr;
     AHCIState *s = opaque;
 
     for (i = 0; i < s->ports; i++) {
         ad = &s->dev[i];
+        pr = &ad->port_regs;
 
-        /* Only remap the CLB address if appropriate, disallowing a state
-         * transition from 'on' to 'off' it should be consistent here. */
-        if (ahci_cond_start_engines(ad, false) != 0) {
+        if (!(pr->cmd & PORT_CMD_START) && (pr->cmd & PORT_CMD_LIST_ON)) {
+            error_report("AHCI: DMA engine should be off, but status bit "
+                         "indicates it is still running.");
+            return -1;
+        }
+        if (!(pr->cmd & PORT_CMD_FIS_RX) && (pr->cmd & PORT_CMD_FIS_ON)) {
+            error_report("AHCI: FIS RX engine should be off, but status bit "
+                         "indicates it is still running.");
+            return -1;
+        }
+
+        /* After a migrate, the DMA/FIS engines are "off" and
+         * need to be conditionally restarted */
+        pr->cmd &= ~(PORT_CMD_LIST_ON | PORT_CMD_FIS_ON);
+        if (ahci_cond_start_engines(ad) != 0) {
             return -1;
         }
 
@@ -1639,15 +1677,22 @@ static void sysbus_ahci_reset(DeviceState *dev)
     ahci_reset(&s->ahci);
 }
 
-static void sysbus_ahci_realize(DeviceState *dev, Error **errp)
+static void sysbus_ahci_init(Object *obj)
 {
-    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-    SysbusAHCIState *s = SYSBUS_AHCI(dev);
+    SysbusAHCIState *s = SYSBUS_AHCI(obj);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    ahci_init(&s->ahci, dev, &address_space_memory, s->num_ports);
+    ahci_init(&s->ahci, DEVICE(obj));
 
     sysbus_init_mmio(sbd, &s->ahci.mem);
     sysbus_init_irq(sbd, &s->ahci.irq);
+}
+
+static void sysbus_ahci_realize(DeviceState *dev, Error **errp)
+{
+    SysbusAHCIState *s = SYSBUS_AHCI(dev);
+
+    ahci_realize(&s->ahci, dev, &address_space_memory, s->num_ports);
 }
 
 static Property sysbus_ahci_properties[] = {
@@ -1670,12 +1715,108 @@ static const TypeInfo sysbus_ahci_info = {
     .name          = TYPE_SYSBUS_AHCI,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SysbusAHCIState),
+    .instance_init = sysbus_ahci_init,
     .class_init    = sysbus_ahci_class_init,
+};
+
+#define ALLWINNER_AHCI_BISTAFR    ((0xa0 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_BISTCR     ((0xa4 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_BISTFCTR   ((0xa8 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_BISTSR     ((0xac - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_BISTDECR   ((0xb0 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_DIAGNR0    ((0xb4 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_DIAGNR1    ((0xb8 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_OOBR       ((0xbc - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_PHYCS0R    ((0xc0 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_PHYCS1R    ((0xc4 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_PHYCS2R    ((0xc8 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_TIMER1MS   ((0xe0 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_GPARAM1R   ((0xe8 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_GPARAM2R   ((0xec - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_PPARAMR    ((0xf0 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_TESTR      ((0xf4 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_VERSIONR   ((0xf8 - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_IDR        ((0xfc - ALLWINNER_AHCI_MMIO_OFF) / 4)
+#define ALLWINNER_AHCI_RWCR       ((0xfc - ALLWINNER_AHCI_MMIO_OFF) / 4)
+
+static uint64_t allwinner_ahci_mem_read(void *opaque, hwaddr addr,
+                                        unsigned size)
+{
+    AllwinnerAHCIState *a = opaque;
+    uint64_t val = a->regs[addr/4];
+
+    switch (addr / 4) {
+    case ALLWINNER_AHCI_PHYCS0R:
+        val |= 0x2 << 28;
+        break;
+    case ALLWINNER_AHCI_PHYCS2R:
+        val &= ~(0x1 << 24);
+        break;
+    }
+    DPRINTF(-1, "addr=0x%" HWADDR_PRIx " val=0x%" PRIx64 ", size=%d\n",
+            addr, val, size);
+    return  val;
+}
+
+static void allwinner_ahci_mem_write(void *opaque, hwaddr addr,
+                                     uint64_t val, unsigned size)
+{
+    AllwinnerAHCIState *a = opaque;
+
+    DPRINTF(-1, "addr=0x%" HWADDR_PRIx " val=0x%" PRIx64 ", size=%d\n",
+            addr, val, size);
+    a->regs[addr/4] = val;
+}
+
+static const MemoryRegionOps allwinner_ahci_mem_ops = {
+    .read = allwinner_ahci_mem_read,
+    .write = allwinner_ahci_mem_write,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static void allwinner_ahci_init(Object *obj)
+{
+    SysbusAHCIState *s = SYSBUS_AHCI(obj);
+    AllwinnerAHCIState *a = ALLWINNER_AHCI(obj);
+
+    memory_region_init_io(&a->mmio, OBJECT(obj), &allwinner_ahci_mem_ops, a,
+                          "allwinner-ahci", ALLWINNER_AHCI_MMIO_SIZE);
+    memory_region_add_subregion(&s->ahci.mem, ALLWINNER_AHCI_MMIO_OFF,
+                                &a->mmio);
+}
+
+static const VMStateDescription vmstate_allwinner_ahci = {
+    .name = "allwinner-ahci",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(regs, AllwinnerAHCIState,
+                             ALLWINNER_AHCI_MMIO_SIZE/4),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void allwinner_ahci_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->vmsd = &vmstate_allwinner_ahci;
+}
+
+static const TypeInfo allwinner_ahci_info = {
+    .name          = TYPE_ALLWINNER_AHCI,
+    .parent        = TYPE_SYSBUS_AHCI,
+    .instance_size = sizeof(AllwinnerAHCIState),
+    .instance_init = allwinner_ahci_init,
+    .class_init    = allwinner_ahci_class_init,
 };
 
 static void sysbus_ahci_register_types(void)
 {
     type_register_static(&sysbus_ahci_info);
+    type_register_static(&allwinner_ahci_info);
 }
 
 type_init(sysbus_ahci_register_types)

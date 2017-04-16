@@ -17,6 +17,9 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/hw.h"
 #include "hw/block/flash.h"
@@ -28,6 +31,7 @@
 #include "lm32_hwsetup.h"
 #include "lm32.h"
 #include "exec/address-spaces.h"
+#include "sysemu/sysemu.h"
 
 typedef struct {
     LM32CPU *cpu;
@@ -128,12 +132,12 @@ static void lm32_evr_init(MachineState *machine)
         irq[i] = qdev_get_gpio_in(env->pic_state, i);
     }
 
-    sysbus_create_simple("lm32-uart", uart0_base, irq[uart0_irq]);
+    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hds[0]);
     sysbus_create_simple("lm32-timer", timer0_base, irq[timer0_irq]);
     sysbus_create_simple("lm32-timer", timer1_base, irq[timer1_irq]);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init();
+    env->juart_state = lm32_juart_init(serial_hds[1]);
 
     reset_info->bootstrap_pc = flash_base;
 
@@ -142,7 +146,7 @@ static void lm32_evr_init(MachineState *machine)
         int kernel_size;
 
         kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
-                               1, EM_LATTICEMICO32, 0);
+                               1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {
@@ -229,13 +233,13 @@ static void lm32_uclinux_init(MachineState *machine)
         irq[i] = qdev_get_gpio_in(env->pic_state, i);
     }
 
-    sysbus_create_simple("lm32-uart", uart0_base, irq[uart0_irq]);
+    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hds[0]);
     sysbus_create_simple("lm32-timer", timer0_base, irq[timer0_irq]);
     sysbus_create_simple("lm32-timer", timer1_base, irq[timer1_irq]);
     sysbus_create_simple("lm32-timer", timer2_base, irq[timer2_irq]);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init();
+    env->juart_state = lm32_juart_init(serial_hds[1]);
 
     reset_info->bootstrap_pc = flash_base;
 
@@ -244,7 +248,7 @@ static void lm32_uclinux_init(MachineState *machine)
         int kernel_size;
 
         kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
-                               1, EM_LATTICEMICO32, 0);
+                               1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {
@@ -328,4 +332,4 @@ static void lm32_machine_init(void)
     type_register_static(&lm32_uclinux_type);
 }
 
-machine_init(lm32_machine_init)
+type_init(lm32_machine_init)

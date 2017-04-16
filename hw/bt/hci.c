@@ -18,11 +18,16 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/timer.h"
 #include "hw/usb.h"
 #include "sysemu/bt.h"
 #include "hw/bt.h"
+#include "qapi/qmp/qerror.h"
+#include "sysemu/replay.h"
+#include "qemu/cutils.h"
 
 struct bt_hci_s {
     uint8_t *(*evt_packet)(void *opaque);
@@ -72,6 +77,8 @@ struct bt_hci_s {
 
     struct HCIInfo info;
     struct bt_device_s device;
+
+    Error *replay_blocker;
 };
 
 #define DEFAULT_RSSI_DBM	20
@@ -419,11 +426,7 @@ static void bt_submit_raw_acl(struct bt_piconet_s *net, int length, uint8_t *dat
  * be continuously allocated.  We do it though, to preserve similar
  * behaviour between hosts.  Some things, like the BD_ADDR cannot be
  * preserved though (for example if a real hci is used).  */
-#ifdef HOST_WORDS_BIGENDIAN
-# define HNDL(raw)	bswap16(raw)
-#else
-# define HNDL(raw)	(raw)
-#endif
+#define HNDL(raw) cpu_to_le16(raw)
 
 static const uint8_t bt_event_reserved_mask[8] = {
     0xff, 0x9f, 0xfb, 0xff, 0x07, 0x18, 0x00, 0x00,
@@ -1497,8 +1500,8 @@ static void bt_submit_hci(struct HCIInfo *info,
         return;
 
 #define PARAM(cmd, param)	(((cmd##_cp *) data)->param)
-#define PARAM16(cmd, param)	le16_to_cpup(&PARAM(cmd, param))
-#define PARAMHANDLE(cmd)	HNDL(PARAM(cmd, handle))
+#define PARAM16(cmd, param) lduw_le_p(&PARAM(cmd, param))
+#define PARAMHANDLE(cmd) PARAM16(cmd, handle)
 #define LENGTH_CHECK(cmd)	if (length < sizeof(cmd##_cp)) goto short_hci
     /* Note: the supported commands bitmask in bt_hci_read_local_commands_rp
      * needs to be updated every time a command is implemented here!  */
@@ -2188,6 +2191,9 @@ struct HCIInfo *bt_new_hci(struct bt_scatternet_s *net)
     s->info.bdaddr_set = bt_hci_bdaddr_set;
 
     s->device.handle_destroy = bt_hci_destroy;
+
+    error_setg(&s->replay_blocker, QERR_REPLAY_NOT_SUPPORTED, "-bt hci");
+    replay_add_blocker(s->replay_blocker);
 
     return &s->info;
 }

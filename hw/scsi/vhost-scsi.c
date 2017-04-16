@@ -14,8 +14,10 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include <linux/vhost.h>
 #include <sys/ioctl.h>
-#include "config.h"
+#include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
 #include "monitor/monitor.h"
@@ -26,7 +28,7 @@
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio-access.h"
 #include "hw/fw-path-provider.h"
-#include "linux/vhost.h"
+#include "qemu/cutils.h"
 
 /* Features supported by host kernel. */
 static const int kernel_feature_bits[] = {
@@ -46,7 +48,7 @@ static int vhost_scsi_set_endpoint(VHostSCSI *s)
 
     memset(&backend, 0, sizeof(backend));
     pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), vs->conf.wwpn);
-    ret = vhost_ops->vhost_call(&s->dev, VHOST_SCSI_SET_ENDPOINT, &backend);
+    ret = vhost_ops->vhost_scsi_set_endpoint(&s->dev, &backend);
     if (ret < 0) {
         return -errno;
     }
@@ -61,7 +63,7 @@ static void vhost_scsi_clear_endpoint(VHostSCSI *s)
 
     memset(&backend, 0, sizeof(backend));
     pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), vs->conf.wwpn);
-    vhost_ops->vhost_call(&s->dev, VHOST_SCSI_CLEAR_ENDPOINT, &backend);
+    vhost_ops->vhost_scsi_clear_endpoint(&s->dev, &backend);
 }
 
 static int vhost_scsi_start(VHostSCSI *s)
@@ -77,8 +79,7 @@ static int vhost_scsi_start(VHostSCSI *s)
         return -ENOSYS;
     }
 
-    ret = vhost_ops->vhost_call(&s->dev,
-                                VHOST_SCSI_GET_ABI_VERSION, &abi_version);
+    ret = vhost_ops->vhost_scsi_get_abi_version(&s->dev, &abi_version);
     if (ret < 0) {
         return -errno;
     }
@@ -218,11 +219,9 @@ static void vhost_scsi_realize(DeviceState *dev, Error **errp)
     }
 
     if (vs->conf.vhostfd) {
-        vhostfd = monitor_fd_param(cur_mon, vs->conf.vhostfd, &err);
+        vhostfd = monitor_fd_param(cur_mon, vs->conf.vhostfd, errp);
         if (vhostfd == -1) {
-            error_setg(errp, "vhost-scsi: unable to parse vhostfd: %s",
-                       error_get_pretty(err));
-            error_free(err);
+            error_prepend(errp, "vhost-scsi: unable to parse vhostfd: ");
             return;
         }
     } else {
@@ -249,7 +248,7 @@ static void vhost_scsi_realize(DeviceState *dev, Error **errp)
     s->dev.backend_features = 0;
 
     ret = vhost_dev_init(&s->dev, (void *)(uintptr_t)vhostfd,
-                         VHOST_BACKEND_TYPE_KERNEL);
+                         VHOST_BACKEND_TYPE_KERNEL, 0);
     if (ret < 0) {
         error_setg(errp, "vhost-scsi: vhost initialization failed: %s",
                    strerror(-ret));

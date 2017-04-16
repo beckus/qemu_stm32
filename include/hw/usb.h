@@ -26,6 +26,7 @@
  */
 
 #include "hw/qdev.h"
+#include "qemu/iov.h"
 #include "qemu/queue.h"
 
 /* Constants related to the USB / PCI interaction */
@@ -234,7 +235,7 @@ struct USBDevice {
     uint8_t addr;
     char product_desc[32];
     int auto_attach;
-    int attached;
+    bool attached;
 
     int32_t state;
     uint8_t setup_buf[8];
@@ -346,6 +347,7 @@ typedef struct USBDeviceClass {
 
     const char *product_desc;
     const USBDesc *usb_desc;
+    bool attached_settable;
 } USBDeviceClass;
 
 typedef struct USBPortOps {

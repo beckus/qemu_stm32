@@ -6,12 +6,17 @@
  * This code is licensed under the GPL
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "hw/m68k/mcf.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "elf.h"
 #include "exec/address-spaces.h"
+#include "qemu/error-report.h"
 #include "sysemu/qtest.h"
 
 #define KERNEL_LOAD_ADDR 0x10000
@@ -39,7 +44,8 @@ static void an5206_init(MachineState *machine)
     }
     cpu = cpu_m68k_init(cpu_model);
     if (!cpu) {
-        hw_error("Unable to find m68k CPU definition\n");
+        error_report("Unable to find m68k CPU definition");
+        exit(1);
     }
     env = &cpu->env;
 
@@ -70,7 +76,7 @@ static void an5206_init(MachineState *machine)
     }
 
     kernel_size = load_elf(kernel_filename, NULL, NULL, &elf_entry,
-                           NULL, NULL, 1, EM_68K, 0);
+                           NULL, NULL, 1, EM_68K, 0, 0);
     entry = elf_entry;
     if (kernel_size < 0) {
         kernel_size = load_uimage(kernel_filename, &entry, NULL, NULL,

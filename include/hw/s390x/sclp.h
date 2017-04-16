@@ -14,8 +14,8 @@
 #ifndef HW_S390_SCLP_H
 #define HW_S390_SCLP_H
 
-#include <hw/sysbus.h>
-#include <hw/qdev.h>
+#include "hw/sysbus.h"
+#include "hw/qdev.h"
 
 #define SCLP_CMD_CODE_MASK                      0xffff00ff
 
@@ -58,6 +58,7 @@
 #define SCLP_RC_CONTAINED_EQUIPMENT_CHECK       0x0340
 #define SCLP_RC_INSUFFICIENT_SCCB_LENGTH        0x0300
 #define SCLP_RC_STANDBY_READ_COMPLETION         0x0410
+#define SCLP_RC_ADAPTER_IN_RESERVED_STATE       0x05f0
 #define SCLP_RC_ADAPTER_ID_NOT_RECOGNIZED       0x09f0
 #define SCLP_RC_INVALID_FUNCTION                0x40f0
 #define SCLP_RC_NO_EVENT_BUFFERS_STORED         0x60f0

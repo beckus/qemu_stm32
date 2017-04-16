@@ -40,6 +40,7 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk -device virti
                 },
                 "iops_wr": 0,
                 "ro": false,
+                "node-name": "NODE_NAME",
                 "backing_file_depth": 0,
                 "drv": "qcow2",
                 "iops": 0,
@@ -69,34 +70,6 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk -device virti
     }
 }
 {
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "path": "/machine/peripheral/virtio0/virtio-backend"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "device": "virtio0",
-        "path": "/machine/peripheral/virtio0"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "RESET"
-}
-{
     "return": [
     ]
 }
@@ -104,14 +77,6 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk -device virti
     "return": {
     }
 }
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "SHUTDOWN"
-}
-
 
 === -drive/device_add and device_del ===
 
@@ -151,6 +116,7 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk
                 },
                 "iops_wr": 0,
                 "ro": false,
+                "node-name": "NODE_NAME",
                 "backing_file_depth": 0,
                 "drv": "qcow2",
                 "iops": 0,
@@ -167,7 +133,6 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk
                 "file": "TEST_DIR/t.qcow2",
                 "encryption_key_missing": false
             },
-            "tray_open": false,
             "type": "unknown"
         }
     ]
@@ -185,34 +150,6 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk
     }
 }
 {
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "path": "/machine/peripheral/virtio0/virtio-backend"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "device": "virtio0",
-        "path": "/machine/peripheral/virtio0"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "RESET"
-}
-{
     "return": [
     ]
 }
@@ -220,14 +157,6 @@ Testing: -drive file=TEST_DIR/t.qcow2,format=qcow2,if=none,id=disk
     "return": {
     }
 }
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "SHUTDOWN"
-}
-
 
 === drive_add/device_add and device_del ===
 
@@ -270,6 +199,7 @@ Testing:
                 },
                 "iops_wr": 0,
                 "ro": false,
+                "node-name": "NODE_NAME",
                 "backing_file_depth": 0,
                 "drv": "qcow2",
                 "iops": 0,
@@ -286,7 +216,6 @@ Testing:
                 "file": "TEST_DIR/t.qcow2",
                 "encryption_key_missing": false
             },
-            "tray_open": false,
             "type": "unknown"
         }
     ]
@@ -304,34 +233,6 @@ Testing:
     }
 }
 {
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "path": "/machine/peripheral/virtio0/virtio-backend"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "device": "virtio0",
-        "path": "/machine/peripheral/virtio0"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "RESET"
-}
-{
     "return": [
     ]
 }
@@ -339,14 +240,6 @@ Testing:
     "return": {
     }
 }
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "SHUTDOWN"
-}
-
 
 === blockdev_add/device_add and device_del ===
 
@@ -390,6 +283,7 @@ Testing:
                 },
                 "iops_wr": 0,
                 "ro": false,
+                "node-name": "NODE_NAME",
                 "backing_file_depth": 0,
                 "drv": "qcow2",
                 "iops": 0,
@@ -406,7 +300,6 @@ Testing:
                 "file": "TEST_DIR/t.qcow2",
                 "encryption_key_missing": false
             },
-            "tray_open": false,
             "type": "unknown"
         }
     ]
@@ -422,34 +315,6 @@ Testing:
 {
     "return": {
     }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "path": "/machine/peripheral/virtio0/virtio-backend"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "DEVICE_DELETED",
-    "data": {
-        "device": "virtio0",
-        "path": "/machine/peripheral/virtio0"
-    }
-}
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "RESET"
 }
 {
     "return": [
@@ -480,6 +345,7 @@ Testing:
                 },
                 "iops_wr": 0,
                 "ro": false,
+                "node-name": "NODE_NAME",
                 "backing_file_depth": 0,
                 "drv": "qcow2",
                 "iops": 0,
@@ -496,7 +362,6 @@ Testing:
                 "file": "TEST_DIR/t.qcow2",
                 "encryption_key_missing": false
             },
-            "tray_open": false,
             "type": "unknown"
         }
     ]
@@ -505,12 +370,4 @@ Testing:
     "return": {
     }
 }
-{
-    "timestamp": {
-        "seconds":  TIMESTAMP,
-        "microseconds":  TIMESTAMP
-    },
-    "event": "SHUTDOWN"
-}
-
 *** done

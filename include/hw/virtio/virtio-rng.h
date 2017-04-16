@@ -9,8 +9,8 @@
  * top-level directory.
  */
 
-#ifndef _QEMU_VIRTIO_RNG_H
-#define _QEMU_VIRTIO_RNG_H
+#ifndef QEMU_VIRTIO_RNG_H
+#define QEMU_VIRTIO_RNG_H
 
 #include "sysemu/rng.h"
 #include "sysemu/rng-random.h"
@@ -26,7 +26,7 @@ struct VirtIORNGConf {
     RngBackend *rng;
     uint64_t max_bytes;
     uint32_t period_ms;
-    RndRandom *default_backend;
+    RngRandom *default_backend;
 };
 
 typedef struct VirtIORNG {

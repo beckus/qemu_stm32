@@ -9,10 +9,10 @@
  * directory.
  */
 
-#include <sys/types.h>
+#include "qemu/osdep.h"
 
 #include "cpu.h"
-#include "ioinst.h"
+#include "hw/s390x/ioinst.h"
 #include "trace.h"
 #include "hw/s390x/s390-pci-bus.h"
 
@@ -509,6 +509,7 @@ static void ioinst_handle_chsc_scsc(ChscReq *req, ChscResp *res)
 
     general_chars[0] = cpu_to_be32(0x03000000);
     general_chars[1] = cpu_to_be32(0x00059000);
+    general_chars[3] = cpu_to_be32(0x00080000);
 
     chsc_chars[0] = cpu_to_be32(0x40000000);
     chsc_chars[3] = cpu_to_be32(0x00040000);
@@ -614,9 +615,11 @@ static void ioinst_handle_chsc_sei(ChscReq *req, ChscResp *res)
             (*res_flags) |= 0x80;
         } else {
             (*res_flags) &= ~0x80;
+            css_clear_sei_pending();
         }
     } else {
-        res->code = cpu_to_be16(0x0004);
+        res->code = cpu_to_be16(0x0005);
+        res->len = cpu_to_be16(CHSC_MIN_RESP_LEN);
     }
 }
 

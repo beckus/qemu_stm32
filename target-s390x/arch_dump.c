@@ -11,6 +11,7 @@
  *
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "elf.h"
 #include "exec/cpu-all.h"
@@ -245,10 +246,4 @@ ssize_t cpu_get_note_size(int class, int machine, int nr_cpus)
     }
 
     return (elf_note_size) * nr_cpus;
-}
-
-int s390_cpu_write_elf64_qemunote(WriteCoreDumpFunction f,
-                                  CPUState *cpu, void *opaque)
-{
-    return 0;
 }

@@ -17,8 +17,10 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
+#include "exec/log.h"
 
 /* SMM support */
 
@@ -97,6 +99,10 @@ void do_smm_enter(X86CPU *cpu)
     x86_stl_phys(cs, sm_state + 0x7e94, env->tr.limit);
     x86_stw_phys(cs, sm_state + 0x7e92, (env->tr.flags >> 8) & 0xf0ff);
 
+    /* ??? Vol 1, 16.5.6 Intel MPX and SMM says that IA32_BNDCFGS
+       is saved at offset 7ED0.  Vol 3, 34.4.1.1, Table 32-2, has
+       7EA0-7ED7 as "reserved".  What's this, and what's really
+       supposed to happen?  */
     x86_stq_phys(cs, sm_state + 0x7ed0, env->efer);
 
     x86_stq_phys(cs, sm_state + 0x7ff8, env->regs[R_EAX]);
@@ -266,7 +272,7 @@ void helper_rsm(CPUX86State *env)
 
     val = x86_ldl_phys(cs, sm_state + 0x7efc); /* revision ID */
     if (val & 0x20000) {
-        env->smbase = x86_ldl_phys(cs, sm_state + 0x7f00) & ~0x7fff;
+        env->smbase = x86_ldl_phys(cs, sm_state + 0x7f00);
     }
 #else
     cpu_x86_update_cr0(env, x86_ldl_phys(cs, sm_state + 0x7ffc));
@@ -319,7 +325,7 @@ void helper_rsm(CPUX86State *env)
 
     val = x86_ldl_phys(cs, sm_state + 0x7efc); /* revision ID */
     if (val & 0x20000) {
-        env->smbase = x86_ldl_phys(cs, sm_state + 0x7ef8) & ~0x7fff;
+        env->smbase = x86_ldl_phys(cs, sm_state + 0x7ef8);
     }
 #endif
     if ((env->hflags2 & HF2_SMM_INSIDE_NMI_MASK) == 0) {

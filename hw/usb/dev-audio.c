@@ -29,6 +29,7 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "hw/usb.h"
 #include "hw/usb/desc.h"
@@ -664,7 +665,7 @@ static const VMStateDescription vmstate_usb_audio = {
 static Property usb_audio_properties[] = {
     DEFINE_PROP_UINT32("debug", USBAudioState, debug, 0),
     DEFINE_PROP_UINT32("buffer", USBAudioState, buffer,
-                       8 * USBAUDIO_PACKET_SIZE),
+                       32 * USBAUDIO_PACKET_SIZE),
     DEFINE_PROP_END_OF_LIST(),
 };
 

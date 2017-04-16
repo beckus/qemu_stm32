@@ -1,5 +1,5 @@
 #ifndef HW_SYSBUS_H
-#define HW_SYSBUS_H 1
+#define HW_SYSBUS_H
 
 /* Devices attached directly to the main system bus.  */
 
@@ -72,7 +72,7 @@ struct SysBusDevice {
         MemoryRegion *memory;
     } mmio[QDEV_MAX_MMIO];
     int num_pio;
-    pio_addr_t pio[QDEV_MAX_PIO];
+    uint32_t pio[QDEV_MAX_PIO];
 };
 
 typedef int FindSysbusDeviceFunc(SysBusDevice *sbdev, void *opaque);
@@ -81,7 +81,7 @@ void sysbus_init_mmio(SysBusDevice *dev, MemoryRegion *memory);
 MemoryRegion *sysbus_mmio_get_region(SysBusDevice *dev, int n);
 void sysbus_init_irq(SysBusDevice *dev, qemu_irq *p);
 void sysbus_pass_irq(SysBusDevice *dev, SysBusDevice *target);
-void sysbus_init_ioports(SysBusDevice *dev, pio_addr_t ioport, pio_addr_t size);
+void sysbus_init_ioports(SysBusDevice *dev, uint32_t ioport, uint32_t size);
 
 
 bool sysbus_has_irq(SysBusDevice *dev, int n);
@@ -118,4 +118,4 @@ static inline DeviceState *sysbus_try_create_simple(const char *name,
     return sysbus_try_create_varargs(name, addr, irq, NULL);
 }
 
-#endif /* !HW_SYSBUS_H */
+#endif /* HW_SYSBUS_H */

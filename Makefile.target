@@ -48,7 +48,7 @@ else
 TARGET_TYPE=system
 endif
 
-$(QEMU_PROG).stp-installed: $(SRC_PATH)/trace-events
+$(QEMU_PROG).stp-installed: $(BUILD_DIR)/trace-events-all
 	$(call quiet-command,$(TRACETOOL) \
 		--format=stap \
 		--backends=$(TRACE_BACKENDS) \
@@ -57,7 +57,7 @@ $(QEMU_PROG).stp-installed: $(SRC_PATH)/trace-events
 		--target-type=$(TARGET_TYPE) \
 		< $< > $@,"  GEN   $(TARGET_DIR)$(QEMU_PROG).stp-installed")
 
-$(QEMU_PROG).stp: $(SRC_PATH)/trace-events
+$(QEMU_PROG).stp: $(BUILD_DIR)/trace-events-all
 	$(call quiet-command,$(TRACETOOL) \
 		--format=stap \
 		--backends=$(TRACE_BACKENDS) \
@@ -66,7 +66,7 @@ $(QEMU_PROG).stp: $(SRC_PATH)/trace-events
 		--target-type=$(TARGET_TYPE) \
 		< $< > $@,"  GEN   $(TARGET_DIR)$(QEMU_PROG).stp")
 
-$(QEMU_PROG)-simpletrace.stp: $(SRC_PATH)/trace-events
+$(QEMU_PROG)-simpletrace.stp: $(BUILD_DIR)/trace-events-all
 	$(call quiet-command,$(TRACETOOL) \
 		--format=simpletrace-stap \
 		--backends=$(TRACE_BACKENDS) \
@@ -108,7 +108,9 @@ obj-$(CONFIG_LIBDECNUMBER) += libdecnumber/dpd/decimal128.o
 
 ifdef CONFIG_LINUX_USER
 
-QEMU_CFLAGS+=-I$(SRC_PATH)/linux-user/$(TARGET_ABI_DIR) -I$(SRC_PATH)/linux-user
+QEMU_CFLAGS+=-I$(SRC_PATH)/linux-user/$(TARGET_ABI_DIR) \
+             -I$(SRC_PATH)/linux-user/host/$(ARCH) \
+             -I$(SRC_PATH)/linux-user
 
 obj-y += linux-user/
 obj-y += gdbstub.o thunk.o user-exec.o
@@ -176,6 +178,7 @@ dummy := $(call unnest-vars,.., \
                crypto-obj-y \
                crypto-aes-obj-y \
                qom-obj-y \
+               io-obj-y \
                common-obj-y \
                common-obj-m)
 target-obj-y := $(target-obj-y-save)
@@ -185,6 +188,7 @@ all-obj-y += $(qom-obj-y)
 all-obj-$(CONFIG_SOFTMMU) += $(block-obj-y)
 all-obj-$(CONFIG_USER_ONLY) += $(crypto-aes-obj-y)
 all-obj-$(CONFIG_SOFTMMU) += $(crypto-obj-y)
+all-obj-$(CONFIG_SOFTMMU) += $(io-obj-y)
 
 $(QEMU_PROG_BUILD): config-devices.mak
 
@@ -199,13 +203,13 @@ endif
 gdbstub-xml.c: $(TARGET_XML_FILES) $(SRC_PATH)/scripts/feature_to_c.sh
 	$(call quiet-command,rm -f $@ && $(SHELL) $(SRC_PATH)/scripts/feature_to_c.sh $@ $(TARGET_XML_FILES),"  GEN   $(TARGET_DIR)$@")
 
-hmp-commands.h: $(SRC_PATH)/hmp-commands.hx
+hmp-commands.h: $(SRC_PATH)/hmp-commands.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -h < $< > $@,"  GEN   $(TARGET_DIR)$@")
 
-hmp-commands-info.h: $(SRC_PATH)/hmp-commands-info.hx
+hmp-commands-info.h: $(SRC_PATH)/hmp-commands-info.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -h < $< > $@,"  GEN   $(TARGET_DIR)$@")
 
-qmp-commands-old.h: $(SRC_PATH)/qmp-commands.hx
+qmp-commands-old.h: $(SRC_PATH)/qmp-commands.hx $(SRC_PATH)/scripts/hxtool
 	$(call quiet-command,sh $(SRC_PATH)/scripts/hxtool -h < $< > $@,"  GEN   $(TARGET_DIR)$@")
 
 clean:

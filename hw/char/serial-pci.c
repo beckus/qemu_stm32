@@ -25,6 +25,8 @@
 
 /* see docs/specs/pci-serial.txt */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/char/serial.h"
 #include "hw/pci/pci.h"
 

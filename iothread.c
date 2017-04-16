@@ -11,6 +11,7 @@
  *
  */
 
+#include "qemu/osdep.h"
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
 #include "qemu/module.h"
@@ -53,16 +54,25 @@ static void *iothread_run(void *opaque)
     return NULL;
 }
 
-static void iothread_instance_finalize(Object *obj)
+static int iothread_stop(Object *object, void *opaque)
 {
-    IOThread *iothread = IOTHREAD(obj);
+    IOThread *iothread;
 
-    if (!iothread->ctx) {
-        return;
+    iothread = (IOThread *)object_dynamic_cast(object, TYPE_IOTHREAD);
+    if (!iothread || !iothread->ctx) {
+        return 0;
     }
     iothread->stopping = true;
     aio_notify(iothread->ctx);
     qemu_thread_join(&iothread->thread);
+    return 0;
+}
+
+static void iothread_instance_finalize(Object *obj)
+{
+    IOThread *iothread = IOTHREAD(obj);
+
+    iothread_stop(obj, NULL);
     qemu_cond_destroy(&iothread->init_done_cond);
     qemu_mutex_destroy(&iothread->init_done_lock);
     aio_context_unref(iothread->ctx);
@@ -72,6 +82,7 @@ static void iothread_complete(UserCreatable *obj, Error **errp)
 {
     Error *local_error = NULL;
     IOThread *iothread = IOTHREAD(obj);
+    char *name, *thread_name;
 
     iothread->stopping = false;
     iothread->thread_id = -1;
@@ -87,8 +98,12 @@ static void iothread_complete(UserCreatable *obj, Error **errp)
     /* This assumes we are called from a thread with useful CPU affinity for us
      * to inherit.
      */
-    qemu_thread_create(&iothread->thread, "iothread", iothread_run,
+    name = object_get_canonical_path_component(OBJECT(obj));
+    thread_name = g_strdup_printf("IO %s", name);
+    qemu_thread_create(&iothread->thread, thread_name, iothread_run,
                        iothread, QEMU_THREAD_JOINABLE);
+    g_free(thread_name);
+    g_free(name);
 
     /* Wait for initialization to complete */
     qemu_mutex_lock(&iothread->init_done_lock);
@@ -167,4 +182,11 @@ IOThreadInfoList *qmp_query_iothreads(Error **errp)
 
     object_child_foreach(container, query_one_iothread, &prev);
     return head;
+}
+
+void iothread_stop_all(void)
+{
+    Object *container = object_get_objects_root();
+
+    object_child_foreach(container, iothread_stop, NULL);
 }

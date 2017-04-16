@@ -18,9 +18,12 @@
  * <http://www.gnu.org/licenses/lgpl-2.1.html>
  */
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "qemu/log.h"
+#include "exec/log.h"
 #include "disas/disas.h"
+#include "exec/exec-all.h"
 #include "tcg-op.h"
 #include "exec/cpu_ldst.h"
 #include "linux-user/syscall_defs.h"
@@ -30,7 +33,7 @@
 
 #define FMT64X                          "%016" PRIx64
 
-static TCGv_ptr cpu_env;
+static TCGv_env cpu_env;
 static TCGv cpu_pc;
 static TCGv cpu_regs[TILEGX_R_COUNT];
 
@@ -2105,38 +2108,44 @@ static TileExcp decode_y2(DisasContext *dc, tilegx_bundle_bits bundle)
     unsigned srcbdest = get_SrcBDest_Y2(bundle);
     const char *mnemonic;
     TCGMemOp memop;
+    bool prefetch_nofault = false;
 
     switch (OEY2(opc, mode)) {
     case OEY2(LD1S_OPCODE_Y2, MODE_OPCODE_YA2):
         memop = MO_SB;
-        mnemonic = "ld1s";
+        mnemonic = "ld1s"; /* prefetch_l1_fault */
         goto do_load;
     case OEY2(LD1U_OPCODE_Y2, MODE_OPCODE_YA2):
         memop = MO_UB;
-        mnemonic = "ld1u";
+        mnemonic = "ld1u"; /* prefetch, prefetch_l1 */
+        prefetch_nofault = (srcbdest == TILEGX_R_ZERO);
         goto do_load;
     case OEY2(LD2S_OPCODE_Y2, MODE_OPCODE_YA2):
         memop = MO_TESW;
-        mnemonic = "ld2s";
+        mnemonic = "ld2s"; /* prefetch_l2_fault */
         goto do_load;
     case OEY2(LD2U_OPCODE_Y2, MODE_OPCODE_YA2):
         memop = MO_TEUW;
-        mnemonic = "ld2u";
+        mnemonic = "ld2u"; /* prefetch_l2 */
+        prefetch_nofault = (srcbdest == TILEGX_R_ZERO);
         goto do_load;
     case OEY2(LD4S_OPCODE_Y2, MODE_OPCODE_YB2):
         memop = MO_TESL;
-        mnemonic = "ld4s";
+        mnemonic = "ld4s"; /* prefetch_l3_fault */
         goto do_load;
     case OEY2(LD4U_OPCODE_Y2, MODE_OPCODE_YB2):
         memop = MO_TEUL;
-        mnemonic = "ld4u";
+        mnemonic = "ld4u"; /* prefetch_l3 */
+        prefetch_nofault = (srcbdest == TILEGX_R_ZERO);
         goto do_load;
     case OEY2(LD_OPCODE_Y2, MODE_OPCODE_YB2):
         memop = MO_TEQ;
         mnemonic = "ld";
     do_load:
-        tcg_gen_qemu_ld_tl(dest_gr(dc, srcbdest), load_gr(dc, srca),
-                           dc->mmuidx, memop);
+        if (!prefetch_nofault) {
+            tcg_gen_qemu_ld_tl(dest_gr(dc, srcbdest), load_gr(dc, srca),
+                               dc->mmuidx, memop);
+        }
         qemu_log_mask(CPU_LOG_TB_IN_ASM, "%s %s, %s", mnemonic,
                       reg_names[srcbdest], reg_names[srca]);
         return TILEGX_EXCP_NONE;
@@ -2434,9 +2443,10 @@ void tilegx_tcg_init(void)
     int i;
 
     cpu_env = tcg_global_reg_new_ptr(TCG_AREG0, "env");
-    cpu_pc = tcg_global_mem_new_i64(TCG_AREG0, offsetof(CPUTLGState, pc), "pc");
+    tcg_ctx.tcg_env = cpu_env;
+    cpu_pc = tcg_global_mem_new_i64(cpu_env, offsetof(CPUTLGState, pc), "pc");
     for (i = 0; i < TILEGX_R_COUNT; i++) {
-        cpu_regs[i] = tcg_global_mem_new_i64(TCG_AREG0,
+        cpu_regs[i] = tcg_global_mem_new_i64(cpu_env,
                                              offsetof(CPUTLGState, regs[i]),
                                              reg_names[i]);
     }

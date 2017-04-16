@@ -18,10 +18,8 @@
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
 
-#include <stdlib.h>
-#include <fcntl.h>
+#include "qemu/osdep.h"
 
-#include "config-host.h"
 #include "crypto-tls-x509-helpers.h"
 #include "qemu/sockets.h"
 
@@ -153,6 +151,7 @@ test_tls_get_ipaddr(const char *addrstr,
     *datalen = res->ai_addrlen;
     *data = g_new(char, *datalen);
     memcpy(*data, res->ai_addr, *datalen);
+    freeaddrinfo(res);
 }
 
 /*
@@ -465,6 +464,7 @@ void test_tls_write_cert_chain(const char *filename,
     if (!g_file_set_contents(filename, buffer, offset, NULL)) {
         abort();
     }
+    g_free(buffer);
 }
 
 

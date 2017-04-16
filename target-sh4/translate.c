@@ -19,8 +19,10 @@
 
 #define DEBUG_DISAS
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "disas/disas.h"
+#include "exec/exec-all.h"
 #include "tcg-op.h"
 #include "exec/cpu_ldst.h"
 
@@ -28,6 +30,7 @@
 #include "exec/helper-gen.h"
 
 #include "trace-tcg.h"
+#include "exec/log.h"
 
 
 typedef struct DisasContext {
@@ -59,7 +62,7 @@ enum {
 };
 
 /* global register indexes */
-static TCGv_ptr cpu_env;
+static TCGv_env cpu_env;
 static TCGv cpu_gregs[24];
 static TCGv cpu_sr, cpu_sr_m, cpu_sr_q, cpu_sr_t;
 static TCGv cpu_pc, cpu_ssr, cpu_spc, cpu_gbr;
@@ -98,55 +101,56 @@ void sh4_translate_init(void)
         return;
 
     cpu_env = tcg_global_reg_new_ptr(TCG_AREG0, "env");
+    tcg_ctx.tcg_env = cpu_env;
 
     for (i = 0; i < 24; i++)
-        cpu_gregs[i] = tcg_global_mem_new_i32(TCG_AREG0,
+        cpu_gregs[i] = tcg_global_mem_new_i32(cpu_env,
                                               offsetof(CPUSH4State, gregs[i]),
                                               gregnames[i]);
 
-    cpu_pc = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_pc = tcg_global_mem_new_i32(cpu_env,
                                     offsetof(CPUSH4State, pc), "PC");
-    cpu_sr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_sr = tcg_global_mem_new_i32(cpu_env,
                                     offsetof(CPUSH4State, sr), "SR");
-    cpu_sr_m = tcg_global_mem_new_i32(TCG_AREG0,
-                                    offsetof(CPUSH4State, sr_m), "SR_M");
-    cpu_sr_q = tcg_global_mem_new_i32(TCG_AREG0,
-                                    offsetof(CPUSH4State, sr_q), "SR_Q");
-    cpu_sr_t = tcg_global_mem_new_i32(TCG_AREG0,
-                                    offsetof(CPUSH4State, sr_t), "SR_T");
-    cpu_ssr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_sr_m = tcg_global_mem_new_i32(cpu_env,
+                                      offsetof(CPUSH4State, sr_m), "SR_M");
+    cpu_sr_q = tcg_global_mem_new_i32(cpu_env,
+                                      offsetof(CPUSH4State, sr_q), "SR_Q");
+    cpu_sr_t = tcg_global_mem_new_i32(cpu_env,
+                                      offsetof(CPUSH4State, sr_t), "SR_T");
+    cpu_ssr = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, ssr), "SSR");
-    cpu_spc = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_spc = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, spc), "SPC");
-    cpu_gbr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_gbr = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, gbr), "GBR");
-    cpu_vbr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_vbr = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, vbr), "VBR");
-    cpu_sgr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_sgr = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, sgr), "SGR");
-    cpu_dbr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_dbr = tcg_global_mem_new_i32(cpu_env,
                                      offsetof(CPUSH4State, dbr), "DBR");
-    cpu_mach = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_mach = tcg_global_mem_new_i32(cpu_env,
                                       offsetof(CPUSH4State, mach), "MACH");
-    cpu_macl = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_macl = tcg_global_mem_new_i32(cpu_env,
                                       offsetof(CPUSH4State, macl), "MACL");
-    cpu_pr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_pr = tcg_global_mem_new_i32(cpu_env,
                                     offsetof(CPUSH4State, pr), "PR");
-    cpu_fpscr = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_fpscr = tcg_global_mem_new_i32(cpu_env,
                                        offsetof(CPUSH4State, fpscr), "FPSCR");
-    cpu_fpul = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_fpul = tcg_global_mem_new_i32(cpu_env,
                                       offsetof(CPUSH4State, fpul), "FPUL");
 
-    cpu_flags = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_flags = tcg_global_mem_new_i32(cpu_env,
 				       offsetof(CPUSH4State, flags), "_flags_");
-    cpu_delayed_pc = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_delayed_pc = tcg_global_mem_new_i32(cpu_env,
 					    offsetof(CPUSH4State, delayed_pc),
 					    "_delayed_pc_");
-    cpu_ldst = tcg_global_mem_new_i32(TCG_AREG0,
+    cpu_ldst = tcg_global_mem_new_i32(cpu_env,
 				      offsetof(CPUSH4State, ldst), "_ldst_");
 
     for (i = 0; i < 32; i++)
-        cpu_fregs[i] = tcg_global_mem_new_i32(TCG_AREG0,
+        cpu_fregs[i] = tcg_global_mem_new_i32(cpu_env,
                                               offsetof(CPUSH4State, fregs[i]),
                                               fregnames[i]);
 
@@ -203,17 +207,26 @@ static void gen_write_sr(TCGv src)
     tcg_gen_andi_i32(cpu_sr_t, cpu_sr_t, 1);
 }
 
-static void gen_goto_tb(DisasContext * ctx, int n, target_ulong dest)
+static inline bool use_goto_tb(DisasContext *ctx, target_ulong dest)
 {
-    TranslationBlock *tb;
-    tb = ctx->tb;
+    if (unlikely(ctx->singlestep_enabled)) {
+        return false;
+    }
 
-    if ((tb->pc & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK) &&
-	!ctx->singlestep_enabled) {
+#ifndef CONFIG_USER_ONLY
+    return (ctx->tb->pc & TARGET_PAGE_MASK) == (dest & TARGET_PAGE_MASK);
+#else
+    return true;
+#endif
+}
+
+static void gen_goto_tb(DisasContext *ctx, int n, target_ulong dest)
+{
+    if (use_goto_tb(ctx, dest)) {
 	/* Use a direct jump if in same page and singlestep not enabled */
         tcg_gen_goto_tb(n);
         tcg_gen_movi_i32(cpu_pc, dest);
-        tcg_gen_exit_tb((uintptr_t)tb + n);
+        tcg_gen_exit_tb((uintptr_t)ctx->tb + n);
     } else {
         tcg_gen_movi_i32(cpu_pc, dest);
         if (ctx->singlestep_enabled)
@@ -1855,6 +1868,11 @@ void gen_intermediate_code(CPUSH4State * env, struct TranslationBlock *tb)
             tcg_gen_movi_i32(cpu_pc, ctx.pc);
             gen_helper_debug(cpu_env);
             ctx.bstate = BS_BRANCH;
+            /* The address covered by the breakpoint must be included in
+               [tb->pc, tb->pc + tb->size) in order to for it to be
+               properly cleared -- thus we increment the PC here so that
+               the logic setting tb->size below does the right thing.  */
+            ctx.pc += 2;
             break;
         }
 
@@ -1907,7 +1925,8 @@ void gen_intermediate_code(CPUSH4State * env, struct TranslationBlock *tb)
     tb->icount = num_insns;
 
 #ifdef DEBUG_DISAS
-    if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)) {
+    if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)
+        && qemu_log_in_addr_range(pc_start)) {
 	qemu_log("IN:\n");	/* , lookup_symbol(pc_start)); */
         log_target_disas(cs, pc_start, ctx.pc - pc_start, 0);
 	qemu_log("\n");

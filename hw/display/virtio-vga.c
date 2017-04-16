@@ -1,8 +1,10 @@
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "ui/console.h"
 #include "vga_int.h"
 #include "hw/virtio/virtio-pci.h"
+#include "qapi/error.h"
 
 /*
  * virtio-vga: This extends VirtioPCIProxy.
@@ -65,11 +67,32 @@ static int virtio_vga_ui_info(void *opaque, uint32_t idx, QemuUIInfo *info)
     return -1;
 }
 
+static void virtio_vga_gl_block(void *opaque, bool block)
+{
+    VirtIOVGA *vvga = opaque;
+
+    if (virtio_gpu_ops.gl_block) {
+        virtio_gpu_ops.gl_block(&vvga->vdev, block);
+    }
+}
+
 static const GraphicHwOps virtio_vga_ops = {
     .invalidate = virtio_vga_invalidate_display,
     .gfx_update = virtio_vga_update_display,
     .text_update = virtio_vga_text_update,
     .ui_info = virtio_vga_ui_info,
+    .gl_block = virtio_vga_gl_block,
+};
+
+static const VMStateDescription vmstate_virtio_vga = {
+    .name = "virtio-vga",
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .fields = (VMStateField[]) {
+        /* no pci stuff here, saving the virtio device will handle that */
+        VMSTATE_STRUCT(vga, VirtIOVGA, 0, vmstate_vga_common, VGACommonState),
+        VMSTATE_END_OF_LIST()
+    }
 };
 
 /* VGA device wrapper around PCI device around virtio GPU */
@@ -78,6 +101,7 @@ static void virtio_vga_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
     VirtIOVGA *vvga = VIRTIO_VGA(vpci_dev);
     VirtIOGPU *g = &vvga->vdev;
     VGACommonState *vga = &vvga->vga;
+    Error *err = NULL;
     uint32_t offset;
     int i;
 
@@ -110,10 +134,12 @@ static void virtio_vga_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
 
     /* init virtio bits */
     qdev_set_parent_bus(DEVICE(g), BUS(&vpci_dev->bus));
-    /* force virtio-1.0 */
-    vpci_dev->flags &= ~VIRTIO_PCI_FLAG_DISABLE_MODERN;
-    vpci_dev->flags |= VIRTIO_PCI_FLAG_DISABLE_LEGACY;
-    object_property_set_bool(OBJECT(g), true, "realized", errp);
+    virtio_pci_force_virtio_1(vpci_dev);
+    object_property_set_bool(OBJECT(g), true, "realized", &err);
+    if (err) {
+        error_propagate(errp, err);
+        return;
+    }
 
     /* add stdvga mmio regions */
     pci_std_vga_mmio_region_init(vga, &vpci_dev->modern_bar,
@@ -151,6 +177,7 @@ static void virtio_vga_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     dc->props = virtio_vga_properties;
     dc->reset = virtio_vga_reset;
+    dc->vmsd = &vmstate_virtio_vga;
     dc->hotpluggable = false;
 
     k->realize = virtio_vga_realize;

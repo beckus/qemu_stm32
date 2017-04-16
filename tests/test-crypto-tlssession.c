@@ -18,14 +18,13 @@
  * Author: Daniel P. Berrange <berrange@redhat.com>
  */
 
-#include <stdlib.h>
-#include <fcntl.h>
+#include "qemu/osdep.h"
 
-#include "config-host.h"
 #include "crypto-tls-x509-helpers.h"
 #include "crypto/tlscredsx509.h"
 #include "crypto/tlssession.h"
 #include "qom/object_interfaces.h"
+#include "qapi/error.h"
 #include "qemu/sockets.h"
 #include "qemu/acl.h"
 

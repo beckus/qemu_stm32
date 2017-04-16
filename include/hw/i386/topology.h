@@ -38,8 +38,6 @@
  *  CPUID Fn8000_0008_ECX[ApicIdCoreIdSize[3:0]] is set to apicid_core_width().
  */
 
-#include <stdint.h>
-#include <string.h>
 
 #include "qemu/bitops.h"
 
@@ -117,6 +115,21 @@ static inline void x86_topo_ids_from_idx(unsigned nr_cores,
     topo->smt_id = cpu_index % nr_threads;
     topo->core_id = core_index % nr_cores;
     topo->pkg_id = core_index / nr_cores;
+}
+
+/* Calculate thread/core/package IDs for a specific topology,
+ * based on APIC ID
+ */
+static inline void x86_topo_ids_from_apicid(apic_id_t apicid,
+                                            unsigned nr_cores,
+                                            unsigned nr_threads,
+                                            X86CPUTopoInfo *topo)
+{
+    topo->smt_id = apicid &
+                   ~(0xFFFFFFFFUL << apicid_smt_width(nr_cores, nr_threads));
+    topo->core_id = (apicid >> apicid_core_offset(nr_cores, nr_threads)) &
+                   ~(0xFFFFFFFFUL << apicid_core_width(nr_cores, nr_threads));
+    topo->pkg_id = apicid >> apicid_pkg_offset(nr_cores, nr_threads);
 }
 
 /* Make APIC ID for the CPU 'cpu_index'

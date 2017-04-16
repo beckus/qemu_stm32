@@ -9,12 +9,13 @@
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
  * See the COPYING file in the top-level directory.
  */
-#if !defined(__HW_SPAPR_DRC_H__)
-#define __HW_SPAPR_DRC_H__
 
+#ifndef HW_SPAPR_DRC_H
+#define HW_SPAPR_DRC_H
+
+#include <libfdt.h>
 #include "qom/object.h"
 #include "hw/qdev.h"
-#include "libfdt.h"
 
 #define TYPE_SPAPR_DR_CONNECTOR "spapr-dr-connector"
 #define SPAPR_DR_CONNECTOR_GET_CLASS(obj) \
@@ -151,6 +152,8 @@ typedef struct sPAPRDRConnector {
     bool configured;
 
     bool awaiting_release;
+    bool signalled;
+    bool awaiting_allocation;
 
     /* device pointer, via link property */
     DeviceState *dev;
@@ -188,6 +191,7 @@ typedef struct sPAPRDRConnectorClass {
                    spapr_drc_detach_cb *detach_cb,
                    void *detach_cb_opaque, Error **errp);
     bool (*release_pending)(sPAPRDRConnector *drc);
+    void (*set_signalled)(sPAPRDRConnector *drc);
 } sPAPRDRConnectorClass;
 
 sPAPRDRConnector *spapr_dr_connector_new(Object *owner,
@@ -199,4 +203,4 @@ sPAPRDRConnector *spapr_dr_connector_by_id(sPAPRDRConnectorType type,
 int spapr_drc_populate_dt(void *fdt, int fdt_offset, Object *owner,
                           uint32_t drc_type_mask);
 
-#endif /* __HW_SPAPR_DRC_H__ */
+#endif /* HW_SPAPR_DRC_H */

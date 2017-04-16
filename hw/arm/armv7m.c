@@ -7,6 +7,10 @@
  * This code is licensed under the GPL.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/arm/arm.h"
 #include "hw/loader.h"
@@ -128,27 +132,33 @@ typedef struct {
     uint32_t base;
 } BitBandState;
 
-static int bitband_init(SysBusDevice *dev)
+static void bitband_init(Object *obj)
 {
-    BitBandState *s = BITBAND(dev);
+    BitBandState *s = BITBAND(obj);
+    SysBusDevice *dev = SYS_BUS_DEVICE(obj);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &bitband_ops, &s->base,
+    memory_region_init_io(&s->iomem, obj, &bitband_ops, &s->base,
                           "bitband", 0x02000000);
     sysbus_init_mmio(dev, &s->iomem);
-    return 0;
 }
 
-static void armv7m_bitband_init(void)
+static void armv7m_bitband_init(Object *parent)
 {
     DeviceState *dev;
 
     dev = qdev_create(NULL, TYPE_BITBAND);
     qdev_prop_set_uint32(dev, "base", 0x20000000);
+    if(parent) {
+        object_property_add_child(parent, "bitband-sram", OBJECT(dev), NULL);
+    }
     qdev_init_nofail(dev);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0x22000000);
 
     dev = qdev_create(NULL, TYPE_BITBAND);
     qdev_prop_set_uint32(dev, "base", 0x40000000);
+    if(parent) {
+        object_property_add_child(parent, "bitband-periph", OBJECT(dev), NULL);
+    }
     qdev_init_nofail(dev);
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0x42000000);
 }
@@ -166,22 +176,20 @@ static void armv7m_reset(void *opaque)
    mem_size is in bytes.
    Returns the NVIC array.  */
 
-qemu_irq *armv7m_init(MemoryRegion *system_memory, int mem_size, int num_irq,
+DeviceState *armv7m_init(Object *parent, MemoryRegion *system_memory, int mem_size, int num_irq,
                       const char *kernel_filename, const char *cpu_model)
 {
     ARMCPU *cpu;
     CPUARMState *env;
     DeviceState *nvic;
-    qemu_irq *pic = g_new(qemu_irq, num_irq);
     int image_size;
     uint64_t entry;
     uint64_t lowaddr;
-    int i;
     int big_endian;
     MemoryRegion *hack = g_new(MemoryRegion, 1);
 
     if (cpu_model == NULL) {
-	cpu_model = "cortex-m3";
+        cpu_model = "cortex-m3";
     }
     cpu = cpu_arm_init(cpu_model);
     if (cpu == NULL) {
@@ -190,17 +198,17 @@ qemu_irq *armv7m_init(MemoryRegion *system_memory, int mem_size, int num_irq,
     }
     env = &cpu->env;
 
-    armv7m_bitband_init();
+    armv7m_bitband_init(parent);
 
     nvic = qdev_create(NULL, "armv7m_nvic");
     qdev_prop_set_uint32(nvic, "num-irq", num_irq);
     env->nvic = nvic;
+    if(parent) {
+        object_property_add_child(parent, "nvic", OBJECT(nvic), NULL);
+    }
     qdev_init_nofail(nvic);
     sysbus_connect_irq(SYS_BUS_DEVICE(nvic), 0,
                        qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_IRQ));
-    for (i = 0; i < num_irq; i++) {
-        pic[i] = qdev_get_gpio_in(nvic, i);
-    }
 
 #ifdef TARGET_WORDS_BIGENDIAN
     big_endian = 1;
@@ -215,7 +223,7 @@ qemu_irq *armv7m_init(MemoryRegion *system_memory, int mem_size, int num_irq,
 
     if (kernel_filename) {
         image_size = load_elf(kernel_filename, NULL, NULL, &entry, &lowaddr,
-                              NULL, big_endian, EM_ARM, 1);
+                              NULL, big_endian, EM_ARM, 1, 0);
         if (image_size < 0) {
             image_size = load_image_targphys(kernel_filename, 0, mem_size);
             lowaddr = 0;
@@ -234,7 +242,7 @@ qemu_irq *armv7m_init(MemoryRegion *system_memory, int mem_size, int num_irq,
     memory_region_add_subregion(system_memory, 0xfffff000, hack);
 
     qemu_register_reset(armv7m_reset, cpu);
-    return pic;
+    return nvic;
 }
 
 static Property bitband_properties[] = {
@@ -245,9 +253,7 @@ static Property bitband_properties[] = {
 static void bitband_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
 
-    k->init = bitband_init;
     dc->props = bitband_properties;
 }
 
@@ -255,6 +261,7 @@ static const TypeInfo bitband_info = {
     .name          = TYPE_BITBAND,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(BitBandState),
+    .instance_init = bitband_init,
     .class_init    = bitband_class_init,
 };
 

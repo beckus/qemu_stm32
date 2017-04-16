@@ -41,6 +41,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>
  */
 
+#include "qemu/osdep.h"
 #include "hw/pci/pci.h"
 #include "hw/i386/ich9.h"
 
@@ -61,10 +62,7 @@ static int i82801b11_bridge_initfn(PCIDevice *d)
 {
     int rc;
 
-    rc = pci_bridge_initfn(d, TYPE_PCI_BUS);
-    if (rc < 0) {
-        return rc;
-    }
+    pci_bridge_initfn(d, TYPE_PCI_BUS);
 
     rc = pci_bridge_ssvid_init(d, I82801ba_SSVID_OFFSET,
                                I82801ba_SSVID_SVID, I82801ba_SSVID_SSID);
@@ -80,6 +78,14 @@ err_bridge:
     return rc;
 }
 
+static const VMStateDescription i82801b11_bridge_dev_vmstate = {
+    .name = "i82801b11_bridge",
+    .fields = (VMStateField[]) {
+        VMSTATE_PCI_DEVICE(parent_obj, PCIBridge),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void i82801b11_bridge_class_init(ObjectClass *klass, void *data)
 {
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -91,6 +97,7 @@ static void i82801b11_bridge_class_init(ObjectClass *klass, void *data)
     k->revision = ICH9_D2P_A2_REVISION;
     k->init = i82801b11_bridge_initfn;
     k->config_write = pci_bridge_write_config;
+    dc->vmsd = &i82801b11_bridge_dev_vmstate;
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
 }
 

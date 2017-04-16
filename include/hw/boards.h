@@ -3,11 +3,11 @@
 #ifndef HW_BOARDS_H
 #define HW_BOARDS_H
 
-#include "qemu/typedefs.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/accel.h"
 #include "hw/qdev.h"
 #include "qom/object.h"
+#include "qom/cpu.h"
 
 void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
                                           const char *name,
@@ -33,13 +33,34 @@ MachineClass *find_default_machine(void);
 extern MachineState *current_machine;
 
 bool machine_usb(MachineState *machine);
-bool machine_iommu(MachineState *machine);
 bool machine_kernel_irqchip_allowed(MachineState *machine);
 bool machine_kernel_irqchip_required(MachineState *machine);
+bool machine_kernel_irqchip_split(MachineState *machine);
 int machine_kvm_shadow_mem(MachineState *machine);
 int machine_phandle_start(MachineState *machine);
 bool machine_dump_guest_core(MachineState *machine);
 bool machine_mem_merge(MachineState *machine);
+void machine_register_compat_props(MachineState *machine);
+
+/**
+ * CPUArchId:
+ * @arch_id - architecture-dependent CPU ID of present or possible CPU
+ * @cpu - pointer to corresponding CPU object if it's present on NULL otherwise
+ */
+typedef struct {
+    uint64_t arch_id;
+    struct CPUState *cpu;
+} CPUArchId;
+
+/**
+ * CPUArchIdList:
+ * @len - number of @CPUArchId items in @cpus array
+ * @cpus - array of present or possible CPUs for current machine configuration
+ */
+typedef struct {
+    int len;
+    CPUArchId cpus[0];
+} CPUArchIdList;
 
 /**
  * MachineClass:
@@ -52,6 +73,19 @@ bool machine_mem_merge(MachineState *machine);
  *    used to provide @cpu_index to socket number mapping, allowing
  *    a machine to group CPU threads belonging to the same socket/package
  *    Returns: socket number given cpu_index belongs to.
+ * @hw_version:
+ *    Value of QEMU_VERSION when the machine was added to QEMU.
+ *    Set only by old machines because they need to keep
+ *    compatibility on code that exposed QEMU_VERSION to guests in
+ *    the past (and now use qemu_hw_version()).
+ * @possible_cpu_arch_ids:
+ *    Returns an array of @CPUArchId architecture-dependent CPU IDs
+ *    which includes CPU IDs for present and possible to hotplug CPUs.
+ *    Caller is responsible for freeing returned list.
+ * @query_hotpluggable_cpus:
+ *    Returns a @HotpluggableCPUList, which describes CPUs objects which
+ *    could be added with -device/device_add.
+ *    Caller is responsible for freeing returned list.
  */
 struct MachineClass {
     /*< private >*/
@@ -79,19 +113,23 @@ struct MachineClass {
         no_cdrom:1,
         no_sdcard:1,
         has_dynamic_sysbus:1,
-        no_tco:1,
-        pci_allow_0_address:1;
+        pci_allow_0_address:1,
+        legacy_fw_cfg_order:1;
     int is_default;
     const char *default_machine_opts;
     const char *default_boot_order;
     const char *default_display;
-    GlobalProperty *compat_props;
+    GArray *compat_props;
     const char *hw_version;
     ram_addr_t default_ram_size;
+    bool option_rom_has_mr;
+    bool rom_file_has_mr;
 
     HotplugHandler *(*get_hotplug_handler)(MachineState *machine,
                                            DeviceState *dev);
     unsigned (*cpu_index_to_socket_id)(unsigned cpu_index);
+    CPUArchIdList *(*possible_cpu_arch_ids)(MachineState *machine);
+    HotpluggableCPUList *(*query_hotpluggable_cpus)(MachineState *machine);
 };
 
 /**
@@ -107,6 +145,7 @@ struct MachineState {
     char *accel;
     bool kernel_irqchip_allowed;
     bool kernel_irqchip_required;
+    bool kernel_irqchip_split;
     int kvm_shadow_mem;
     char *dtb;
     char *dumpdtb;
@@ -120,6 +159,8 @@ struct MachineState {
     char *firmware;
     bool iommu;
     bool suppress_vmdesc;
+    bool enforce_config_section;
+    bool enable_graphics;
 
     ram_addr_t ram_size;
     ram_addr_t maxram_size;
@@ -147,6 +188,22 @@ struct MachineState {
     { \
         type_register_static(&machine_initfn##_typeinfo); \
     } \
-    machine_init(machine_initfn##_register_types)
+    type_init(machine_initfn##_register_types)
+
+#define SET_MACHINE_COMPAT(m, COMPAT) \
+    do {                              \
+        int i;                        \
+        static GlobalProperty props[] = {       \
+            COMPAT                              \
+            { /* end of list */ }               \
+        };                                      \
+        if (!m->compat_props) { \
+            m->compat_props = g_array_new(false, false, sizeof(void *)); \
+        } \
+        for (i = 0; props[i].driver != NULL; i++) {    \
+            GlobalProperty *prop = &props[i];          \
+            g_array_append_val(m->compat_props, prop); \
+        }                                              \
+    } while (0)
 
 #endif

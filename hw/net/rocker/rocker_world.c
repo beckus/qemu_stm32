@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include "qemu/osdep.h"
 #include "qemu/iov.h"
 
 #include "rocker.h"
@@ -97,10 +98,5 @@ enum rocker_world_type world_type(World *world)
 
 const char *world_name(World *world)
 {
-    switch (world->type) {
-    case ROCKER_WORLD_TYPE_OF_DPA:
-        return "OF_DPA";
-    default:
-        return "unknown";
-    }
+    return world->ops->name;
 }

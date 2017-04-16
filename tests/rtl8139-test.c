@@ -7,11 +7,9 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <glib.h>
-#include <string.h>
+#include "qemu/osdep.h"
 #include "libqtest.h"
 #include "libqos/pci-pc.h"
-#include "qemu/osdep.h"
 #include "qemu/timer.h"
 #include "qemu-common.h"
 

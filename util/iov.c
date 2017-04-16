@@ -16,11 +16,14 @@
  * GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "qemu/iov.h"
 #include "qemu/sockets.h"
+#include "qemu/cutils.h"
 
-size_t iov_from_buf(const struct iovec *iov, unsigned int iov_cnt,
-                    size_t offset, const void *buf, size_t bytes)
+size_t iov_from_buf_full(const struct iovec *iov, unsigned int iov_cnt,
+                         size_t offset, const void *buf, size_t bytes)
 {
     size_t done;
     unsigned int i;
@@ -38,8 +41,8 @@ size_t iov_from_buf(const struct iovec *iov, unsigned int iov_cnt,
     return done;
 }
 
-size_t iov_to_buf(const struct iovec *iov, const unsigned int iov_cnt,
-                  size_t offset, void *buf, size_t bytes)
+size_t iov_to_buf_full(const struct iovec *iov, const unsigned int iov_cnt,
+                       size_t offset, void *buf, size_t bytes)
 {
     size_t done;
     unsigned int i;
@@ -244,7 +247,8 @@ unsigned iov_copy(struct iovec *dst_iov, unsigned int dst_iov_cnt,
 {
     size_t len;
     unsigned int i, j;
-    for (i = 0, j = 0; i < iov_cnt && j < dst_iov_cnt && bytes; i++) {
+    for (i = 0, j = 0;
+         i < iov_cnt && j < dst_iov_cnt && (offset || bytes); i++) {
         if (offset >= iov[i].iov_len) {
             offset -= iov[i].iov_len;
             continue;

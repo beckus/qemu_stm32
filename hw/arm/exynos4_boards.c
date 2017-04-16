@@ -21,6 +21,9 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/qtest.h"
 #include "hw/sysbus.h"
@@ -180,4 +183,4 @@ static void exynos4_machines_init(void)
     type_register_static(&smdkc210_type);
 }
 
-machine_init(exynos4_machines_init)
+type_init(exynos4_machines_init)

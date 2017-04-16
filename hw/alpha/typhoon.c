@@ -6,6 +6,8 @@
  * This work is licensed under the GNU GPL license version 2 or later.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "cpu.h"
 #include "hw/hw.h"
 #include "hw/devices.h"
@@ -822,7 +824,6 @@ PCIBus *typhoon_init(ram_addr_t ram_size, ISABus **isa_bus,
     int i;
 
     dev = qdev_create(NULL, TYPE_TYPHOON_PCI_HOST_BRIDGE);
-    qdev_init_nofail(dev);
 
     s = TYPHOON_PCI_HOST_BRIDGE(dev);
     phb = PCI_HOST_BRIDGE(dev);
@@ -887,6 +888,7 @@ PCIBus *typhoon_init(ram_addr_t ram_size, ISABus **isa_bus,
                          &s->pchip.reg_mem, &s->pchip.reg_io,
                          0, 64, TYPE_PCI_BUS);
     phb->bus = b;
+    qdev_init_nofail(dev);
 
     /* Host memory as seen from the PCI side, via the IOMMU.  */
     memory_region_init_iommu(&s->pchip.iommu, OBJECT(s), &typhoon_iommu_ops,
@@ -920,7 +922,8 @@ PCIBus *typhoon_init(ram_addr_t ram_size, ISABus **isa_bus,
     {
         qemu_irq *isa_irqs;
 
-        *isa_bus = isa_bus_new(NULL, get_system_memory(), &s->pchip.reg_io);
+        *isa_bus = isa_bus_new(NULL, get_system_memory(), &s->pchip.reg_io,
+                               &error_abort);
         isa_irqs = i8259_init(*isa_bus,
                               qemu_allocate_irq(typhoon_set_isa_irq, s, 0));
         isa_bus_irqs(*isa_bus, isa_irqs);

@@ -10,11 +10,8 @@
  */
 
 #ifndef HBITMAP_H
-#define HBITMAP_H 1
+#define HBITMAP_H
 
-#include <limits.h>
-#include <stdint.h>
-#include <stdbool.h>
 #include "bitops.h"
 #include "host-utils.h"
 

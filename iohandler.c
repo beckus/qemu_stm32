@@ -22,7 +22,8 @@
  * THE SOFTWARE.
  */
 
-#include "config-host.h"
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/queue.h"
 #include "block/aio.h"
@@ -43,6 +44,12 @@ static void iohandler_init(void)
     }
 }
 
+AioContext *iohandler_get_aio_context(void)
+{
+    iohandler_init();
+    return iohandler_ctx;
+}
+
 GSource *iohandler_get_g_source(void)
 {
     iohandler_init();
@@ -55,7 +62,8 @@ void qemu_set_fd_handler(int fd,
                          void *opaque)
 {
     iohandler_init();
-    aio_set_fd_handler(iohandler_ctx, fd, fd_read, fd_write, opaque);
+    aio_set_fd_handler(iohandler_ctx, fd, false,
+                       fd_read, fd_write, opaque);
 }
 
 /* reaping of zombies.  right now we're not passing the status to

@@ -460,8 +460,9 @@ function tcg_gen_xxx(args).
 
 4) Backend
 
-tcg-target.h contains the target specific definitions. tcg-target.c
-contains the target specific code.
+tcg-target.h contains the target specific definitions. tcg-target.inc.c
+contains the target specific code; it is #included by tcg/tcg.c, rather
+than being a standalone C file.
 
 4.1) Assumptions
 
@@ -472,7 +473,7 @@ On a 32 bit target, all 64 bit operations are converted to 32 bits. A
 few specific operations must be implemented to allow it (see add2_i32,
 sub2_i32, brcond2_i32).
 
-On a 64 bit target, the values are transfered between 32 and 64-bit
+On a 64 bit target, the values are transferred between 32 and 64-bit
 registers using the following ops:
 - trunc_shr_i64_i32
 - ext_i32_i64

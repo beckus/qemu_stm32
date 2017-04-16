@@ -17,9 +17,11 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "hw/devices.h"
 #include "net/net.h"
+#include "qapi/error.h"
 #include "qemu/timer.h"
 #include <zlib.h>
 
@@ -292,7 +294,7 @@ static void dp8393x_set_next_tick(dp8393xState *s)
 
     ticks = s->regs[SONIC_WT1] << 16 | s->regs[SONIC_WT0];
     s->wt_last_update = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    delay = get_ticks_per_sec() * ticks / 5000000;
+    delay = NANOSECONDS_PER_SECOND * ticks / 5000000;
     timer_mod(s->watchdog, s->wt_last_update + delay);
 }
 
@@ -810,7 +812,7 @@ static void dp8393x_reset(DeviceState *dev)
 }
 
 static NetClientInfo net_dp83932_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .can_receive = dp8393x_can_receive,
     .receive = dp8393x_receive,

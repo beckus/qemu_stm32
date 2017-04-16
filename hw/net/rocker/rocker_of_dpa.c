@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include "qemu/osdep.h"
 #include "net/eth.h"
 #include "qemu/iov.h"
 #include "qemu/timer.h"
@@ -102,9 +103,8 @@ typedef struct of_dpa_flow_key {
 
 /* Width of key which includes field 'f' in u64s, rounded up */
 #define FLOW_KEY_WIDTH(f) \
-    ((offsetof(OfDpaFlowKey, f) + \
-      sizeof(((OfDpaFlowKey *)0)->f) + \
-      sizeof(uint64_t) - 1) / sizeof(uint64_t))
+    DIV_ROUND_UP(offsetof(OfDpaFlowKey, f) + sizeof(((OfDpaFlowKey *)0)->f), \
+    sizeof(uint64_t))
 
 typedef struct of_dpa_flow_action {
     uint32_t goto_tbl;
@@ -2462,15 +2462,13 @@ RockerOfDpaFlowList *qmp_query_rocker_of_dpa_flows(const char *name,
 
     r = rocker_find(name);
     if (!r) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s not found", name);
+        error_setg(errp, "rocker %s not found", name);
         return NULL;
     }
 
     w = rocker_get_world(r, ROCKER_WORLD_TYPE_OF_DPA);
     if (!w) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s doesn't have OF-DPA world", name);
+        error_setg(errp, "rocker %s doesn't have OF-DPA world", name);
         return NULL;
     }
 
@@ -2597,15 +2595,13 @@ RockerOfDpaGroupList *qmp_query_rocker_of_dpa_groups(const char *name,
 
     r = rocker_find(name);
     if (!r) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s not found", name);
+        error_setg(errp, "rocker %s not found", name);
         return NULL;
     }
 
     w = rocker_get_world(r, ROCKER_WORLD_TYPE_OF_DPA);
     if (!w) {
-        error_set(errp, ERROR_CLASS_GENERIC_ERROR,
-                  "rocker %s doesn't have OF-DPA world", name);
+        error_setg(errp, "rocker %s doesn't have OF-DPA world", name);
         return NULL;
     }
 
@@ -2617,6 +2613,7 @@ RockerOfDpaGroupList *qmp_query_rocker_of_dpa_groups(const char *name,
 }
 
 static WorldOps of_dpa_ops = {
+    .name = "ofdpa",
     .init = of_dpa_init,
     .uninit = of_dpa_uninit,
     .ig = of_dpa_ig,

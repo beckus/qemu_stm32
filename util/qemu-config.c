@@ -1,8 +1,8 @@
+#include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "qemu/option.h"
 #include "qemu/config-file.h"
-#include "qapi/error.h"
 #include "qmp-commands.h"
 
 static QemuOptsList *vm_config_groups[48];
@@ -219,6 +219,14 @@ static QemuOptsList machine_opts = {
             .name = "suppress-vmdesc",
             .type = QEMU_OPT_BOOL,
             .help = "Set on to disable self-describing migration",
+        },{
+            .name = "aes-key-wrap",
+            .type = QEMU_OPT_BOOL,
+            .help = "enable/disable AES key wrapping using the CPACF wrapping key",
+        },{
+            .name = "dea-key-wrap",
+            .type = QEMU_OPT_BOOL,
+            .help = "enable/disable DEA key wrapping using the CPACF wrapping key",
         },
         { /* End of list */ }
     }

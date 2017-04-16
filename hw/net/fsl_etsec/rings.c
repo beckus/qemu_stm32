@@ -21,8 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
 #include "net/checksum.h"
-
+#include "qemu/log.h"
 #include "etsec.h"
 #include "registers.h"
 

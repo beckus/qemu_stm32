@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "net/net.h"
@@ -153,6 +154,10 @@ static void ne2000_update_irq(NE2000State *s)
 static int ne2000_buffer_full(NE2000State *s)
 {
     int avail, index, boundary;
+
+    if (s->stop <= s->start) {
+        return 1;
+    }
 
     index = s->curpag << 8;
     boundary = s->boundary << 8;
@@ -467,8 +472,9 @@ static inline void ne2000_mem_writel(NE2000State *s, uint32_t addr,
                                      uint32_t val)
 {
     addr &= ~1; /* XXX: check exact behaviour if not even */
-    if (addr < 32 ||
-        (addr >= NE2000_PMEM_START && addr < NE2000_MEM_SIZE)) {
+    if (addr < 32
+        || (addr >= NE2000_PMEM_START
+            && addr + sizeof(uint32_t) <= NE2000_MEM_SIZE)) {
         stl_le_p(s->mem + addr, val);
     }
 }
@@ -497,8 +503,9 @@ static inline uint32_t ne2000_mem_readw(NE2000State *s, uint32_t addr)
 static inline uint32_t ne2000_mem_readl(NE2000State *s, uint32_t addr)
 {
     addr &= ~1; /* XXX: check exact behaviour if not even */
-    if (addr < 32 ||
-        (addr >= NE2000_PMEM_START && addr < NE2000_MEM_SIZE)) {
+    if (addr < 32
+        || (addr >= NE2000_PMEM_START
+            && addr + sizeof(uint32_t) <= NE2000_MEM_SIZE)) {
         return ldl_le_p(s->mem + addr);
     } else {
         return 0xffffffff;
@@ -705,7 +712,7 @@ void ne2000_setup_io(NE2000State *s, DeviceState *dev, unsigned size)
 }
 
 static NetClientInfo net_ne2000_info = {
-    .type = NET_CLIENT_OPTIONS_KIND_NIC,
+    .type = NET_CLIENT_DRIVER_NIC,
     .size = sizeof(NICState),
     .receive = ne2000_receive,
 };

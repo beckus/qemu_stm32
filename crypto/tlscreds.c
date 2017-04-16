@@ -18,6 +18,8 @@
  *
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "crypto/tlscredspriv.h"
 #include "trace.h"
 
@@ -123,10 +125,10 @@ qcrypto_tls_creds_get_path(QCryptoTLSCreds *creds,
         goto cleanup;
     }
 
-    trace_qcrypto_tls_creds_get_path(creds, filename,
-                                     *cred ? *cred : "<none>");
     ret = 0;
  cleanup:
+    trace_qcrypto_tls_creds_get_path(creds, filename,
+                                     *cred ? *cred : "<none>");
     return ret;
 }
 
@@ -177,6 +179,27 @@ qcrypto_tls_creds_prop_get_dir(Object *obj,
 
 
 static void
+qcrypto_tls_creds_prop_set_priority(Object *obj,
+                                    const char *value,
+                                    Error **errp G_GNUC_UNUSED)
+{
+    QCryptoTLSCreds *creds = QCRYPTO_TLS_CREDS(obj);
+
+    creds->priority = g_strdup(value);
+}
+
+
+static char *
+qcrypto_tls_creds_prop_get_priority(Object *obj,
+                                    Error **errp G_GNUC_UNUSED)
+{
+    QCryptoTLSCreds *creds = QCRYPTO_TLS_CREDS(obj);
+
+    return g_strdup(creds->priority);
+}
+
+
+static void
 qcrypto_tls_creds_prop_set_endpoint(Object *obj,
                                     int value,
                                     Error **errp G_GNUC_UNUSED)
@@ -198,26 +221,35 @@ qcrypto_tls_creds_prop_get_endpoint(Object *obj,
 
 
 static void
+qcrypto_tls_creds_class_init(ObjectClass *oc, void *data)
+{
+    object_class_property_add_bool(oc, "verify-peer",
+                                   qcrypto_tls_creds_prop_get_verify,
+                                   qcrypto_tls_creds_prop_set_verify,
+                                   NULL);
+    object_class_property_add_str(oc, "dir",
+                                  qcrypto_tls_creds_prop_get_dir,
+                                  qcrypto_tls_creds_prop_set_dir,
+                                  NULL);
+    object_class_property_add_enum(oc, "endpoint",
+                                   "QCryptoTLSCredsEndpoint",
+                                   QCryptoTLSCredsEndpoint_lookup,
+                                   qcrypto_tls_creds_prop_get_endpoint,
+                                   qcrypto_tls_creds_prop_set_endpoint,
+                                   NULL);
+    object_class_property_add_str(oc, "priority",
+                                  qcrypto_tls_creds_prop_get_priority,
+                                  qcrypto_tls_creds_prop_set_priority,
+                                  NULL);
+}
+
+
+static void
 qcrypto_tls_creds_init(Object *obj)
 {
     QCryptoTLSCreds *creds = QCRYPTO_TLS_CREDS(obj);
 
     creds->verifyPeer = true;
-
-    object_property_add_bool(obj, "verify-peer",
-                             qcrypto_tls_creds_prop_get_verify,
-                             qcrypto_tls_creds_prop_set_verify,
-                             NULL);
-    object_property_add_str(obj, "dir",
-                            qcrypto_tls_creds_prop_get_dir,
-                            qcrypto_tls_creds_prop_set_dir,
-                            NULL);
-    object_property_add_enum(obj, "endpoint",
-                             "QCryptoTLSCredsEndpoint",
-                             QCryptoTLSCredsEndpoint_lookup,
-                             qcrypto_tls_creds_prop_get_endpoint,
-                             qcrypto_tls_creds_prop_set_endpoint,
-                             NULL);
 }
 
 
@@ -227,6 +259,7 @@ qcrypto_tls_creds_finalize(Object *obj)
     QCryptoTLSCreds *creds = QCRYPTO_TLS_CREDS(obj);
 
     g_free(creds->dir);
+    g_free(creds->priority);
 }
 
 
@@ -236,6 +269,7 @@ static const TypeInfo qcrypto_tls_creds_info = {
     .instance_size = sizeof(QCryptoTLSCreds),
     .instance_init = qcrypto_tls_creds_init,
     .instance_finalize = qcrypto_tls_creds_finalize,
+    .class_init = qcrypto_tls_creds_class_init,
     .class_size = sizeof(QCryptoTLSCredsClass),
     .abstract = true,
 };

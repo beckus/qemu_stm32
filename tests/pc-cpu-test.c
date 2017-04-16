@@ -7,12 +7,10 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <glib.h>
-#include <string.h>
+#include "qemu/osdep.h"
 
 #include "qemu-common.h"
 #include "libqtest.h"
-#include "qemu/osdep.h"
 #include "qapi/qmp/types.h"
 
 struct PCTestData {

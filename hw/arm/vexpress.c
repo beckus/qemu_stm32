@@ -21,6 +21,10 @@
  *  GNU GPL, version 2 or (at your option) any later version.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu-common.h"
+#include "cpu.h"
 #include "hw/sysbus.h"
 #include "hw/arm/arm.h"
 #include "hw/arm/primecell.h"
@@ -35,6 +39,7 @@
 #include "sysemu/device_tree.h"
 #include "qemu/error-report.h"
 #include <libfdt.h>
+#include "hw/char/pl011.h"
 
 #define VEXPRESS_BOARD_ID 0x8e0
 #define VEXPRESS_FLASH_SIZE (64 * 1024 * 1024)
@@ -211,7 +216,6 @@ static void init_cpus(const char *cpu_model, const char *privdev,
     /* Create the actual CPUs */
     for (n = 0; n < smp_cpus; n++) {
         Object *cpuobj = object_new(object_class_get_name(cpu_oc));
-        Error *err = NULL;
 
         if (!secure) {
             object_property_set_bool(cpuobj, false, "has_el3", NULL);
@@ -221,11 +225,7 @@ static void init_cpus(const char *cpu_model, const char *privdev,
             object_property_set_int(cpuobj, periphbase,
                                     "reset-cbar", &error_abort);
         }
-        object_property_set_bool(cpuobj, true, "realized", &err);
-        if (err) {
-            error_report_err(err);
-            exit(1);
-        }
+        object_property_set_bool(cpuobj, true, "realized", &error_fatal);
     }
 
     /* Create the private peripheral devices (including the GIC);
@@ -482,8 +482,10 @@ static void vexpress_modify_dtb(const struct arm_boot_info *info, void *fdt)
     uint32_t acells, scells, intc;
     const VEDBoardInfo *daughterboard = (const VEDBoardInfo *)info;
 
-    acells = qemu_fdt_getprop_cell(fdt, "/", "#address-cells");
-    scells = qemu_fdt_getprop_cell(fdt, "/", "#size-cells");
+    acells = qemu_fdt_getprop_cell(fdt, "/", "#address-cells",
+                                   NULL, &error_fatal);
+    scells = qemu_fdt_getprop_cell(fdt, "/", "#size-cells",
+                                   NULL, &error_fatal);
     intc = find_int_controller(fdt);
     if (!intc) {
         /* Not fatal, we just won't provide virtio. This will
@@ -630,10 +632,10 @@ static void vexpress_common_init(MachineState *machine)
     sysbus_create_simple("pl050_keyboard", map[VE_KMI0], pic[12]);
     sysbus_create_simple("pl050_mouse", map[VE_KMI1], pic[13]);
 
-    sysbus_create_simple("pl011", map[VE_UART0], pic[5]);
-    sysbus_create_simple("pl011", map[VE_UART1], pic[6]);
-    sysbus_create_simple("pl011", map[VE_UART2], pic[7]);
-    sysbus_create_simple("pl011", map[VE_UART3], pic[8]);
+    pl011_create(map[VE_UART0], pic[5], serial_hds[0]);
+    pl011_create(map[VE_UART1], pic[6], serial_hds[1]);
+    pl011_create(map[VE_UART2], pic[7], serial_hds[2]);
+    pl011_create(map[VE_UART3], pic[8], serial_hds[3]);
 
     sysbus_create_simple("sp804", map[VE_TIMER01], pic[2]);
     sysbus_create_simple("sp804", map[VE_TIMER23], pic[3]);
@@ -802,4 +804,4 @@ static void vexpress_machine_init(void)
     type_register_static(&vexpress_a15_info);
 }
 
-machine_init(vexpress_machine_init);
+type_init(vexpress_machine_init);

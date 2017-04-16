@@ -17,7 +17,9 @@
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "qemu/osdep.h"
 #include "hw/gpio/imx_gpio.h"
+#include "qemu/log.h"
 
 #ifndef DEBUG_IMX_GPIO
 #define DEBUG_IMX_GPIO 0
@@ -29,11 +31,12 @@ typedef enum IMXGPIOLevel {
 } IMXGPIOLevel;
 
 #define DPRINTF(fmt, args...) \
-          do { \
-              if (DEBUG_IMX_GPIO) { \
-                  fprintf(stderr, "%s: " fmt , __func__, ##args); \
-              } \
-          } while (0)
+    do { \
+        if (DEBUG_IMX_GPIO) { \
+            fprintf(stderr, "[%s]%s: " fmt , TYPE_IMX_GPIO, \
+                                             __func__, ##args); \
+        } \
+    } while (0)
 
 static const char *imx_gpio_reg_name(uint32_t reg)
 {
@@ -61,7 +64,12 @@ static const char *imx_gpio_reg_name(uint32_t reg)
 
 static void imx_gpio_update_int(IMXGPIOState *s)
 {
-    qemu_set_irq(s->irq, (s->isr & s->imr) ? 1 : 0);
+    if (s->has_upper_pin_irq) {
+        qemu_set_irq(s->irq[0], (s->isr & s->imr & 0x0000FFFF) ? 1 : 0);
+        qemu_set_irq(s->irq[1], (s->isr & s->imr & 0xFFFF0000) ? 1 : 0);
+    } else {
+        qemu_set_irq(s->irq[0], (s->isr & s->imr) ? 1 : 0);
+    }
 }
 
 static void imx_gpio_set_int_line(IMXGPIOState *s, int line, IMXGPIOLevel level)
@@ -176,19 +184,19 @@ static uint64_t imx_gpio_read(void *opaque, hwaddr offset, unsigned size)
         if (s->has_edge_sel) {
             reg_value = s->edge_sel;
         } else {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: EDGE_SEL register not "
+            qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: EDGE_SEL register not "
                           "present on this version of GPIO device\n",
                           TYPE_IMX_GPIO, __func__);
         }
         break;
 
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Bad register at offset %d\n",
-                      TYPE_IMX_GPIO, __func__, (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_GPIO, __func__, offset);
         break;
     }
 
-    DPRINTF("(%s) = 0x%"PRIx32"\n", imx_gpio_reg_name(offset), reg_value);
+    DPRINTF("(%s) = 0x%" PRIx32 "\n", imx_gpio_reg_name(offset), reg_value);
 
     return reg_value;
 }
@@ -198,7 +206,7 @@ static void imx_gpio_write(void *opaque, hwaddr offset, uint64_t value,
 {
     IMXGPIOState *s = IMX_GPIO(opaque);
 
-    DPRINTF("(%s, value = 0x%"PRIx32")\n", imx_gpio_reg_name(offset),
+    DPRINTF("(%s, value = 0x%" PRIx32 ")\n", imx_gpio_reg_name(offset),
             (uint32_t)value);
 
     switch (offset) {
@@ -238,15 +246,15 @@ static void imx_gpio_write(void *opaque, hwaddr offset, uint64_t value,
             s->edge_sel = value;
             imx_gpio_set_all_int_lines(s);
         } else {
-            qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: EDGE_SEL register not "
+            qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: EDGE_SEL register not "
                           "present on this version of GPIO device\n",
                           TYPE_IMX_GPIO, __func__);
         }
         break;
 
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Bad register at offset %d\n",
-                      TYPE_IMX_GPIO, __func__, (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad register at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_GPIO, __func__, offset);
         break;
     }
 
@@ -281,6 +289,8 @@ static const VMStateDescription vmstate_imx_gpio = {
 
 static Property imx_gpio_properties[] = {
     DEFINE_PROP_BOOL("has-edge-sel", IMXGPIOState, has_edge_sel, true),
+    DEFINE_PROP_BOOL("has-upper-pin-irq", IMXGPIOState, has_upper_pin_irq,
+                     false),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -310,7 +320,8 @@ static void imx_gpio_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_in(DEVICE(s), imx_gpio_set, IMX_GPIO_PIN_COUNT);
     qdev_init_gpio_out(DEVICE(s), s->output, IMX_GPIO_PIN_COUNT);
 
-    sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
+    sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq[0]);
+    sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq[1]);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 }
 

@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  */
 
+#include "qemu/osdep.h"
 #include "hw/hw.h"
 #include "hw/i386/pc.h"
 #include "hw/pci/pci.h"
@@ -90,8 +91,10 @@ static void piix4_realize(PCIDevice *dev, Error **errp)
 {
     PIIX4State *d = PIIX4_PCI_DEVICE(dev);
 
-    isa_bus_new(DEVICE(d), pci_address_space(dev),
-                pci_address_space_io(dev));
+    if (!isa_bus_new(DEVICE(d), pci_address_space(dev),
+                     pci_address_space_io(dev), errp)) {
+        return;
+    }
     piix4_dev = &d->dev;
     qemu_register_reset(piix4_reset, d);
 }

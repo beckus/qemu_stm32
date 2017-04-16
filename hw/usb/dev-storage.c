@@ -7,6 +7,8 @@
  * This code is licensed under the LGPL.
  */
 
+#include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
 #include "qemu/option.h"
@@ -20,6 +22,7 @@
 #include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "qapi/visitor.h"
+#include "qemu/cutils.h"
 
 //#define DEBUG_MSD
 
@@ -553,21 +556,6 @@ static void usb_msd_handle_data(USBDevice *dev, USBPacket *p)
     }
 }
 
-static void usb_msd_password_cb(void *opaque, int err)
-{
-    MSDState *s = opaque;
-    Error *local_err = NULL;
-
-    if (!err) {
-        usb_device_attach(&s->dev, &local_err);
-    }
-
-    if (local_err) {
-        error_report_err(local_err);
-        qdev_unplug(&s->dev.qdev, NULL);
-    }
-}
-
 static void *usb_msd_load_request(QEMUFile *f, SCSIRequest *req)
 {
     MSDState *s = DO_UPCAST(MSDState, dev.qdev, req->bus->qbus.parent);
@@ -613,35 +601,21 @@ static void usb_msd_realize_storage(USBDevice *dev, Error **errp)
         return;
     }
 
-    bdrv_add_key(blk_bs(blk), NULL, &err);
-    if (err) {
-        if (monitor_cur_is_qmp()) {
-            error_propagate(errp, err);
-            return;
-        }
-        error_free(err);
-        err = NULL;
-        if (cur_mon) {
-            monitor_read_bdrv_key_start(cur_mon, blk_bs(blk),
-                                        usb_msd_password_cb, s);
-            s->dev.auto_attach = 0;
-        } else {
-            autostart = 0;
-        }
-    }
-
     blkconf_serial(&s->conf, &dev->serial);
     blkconf_blocksizes(&s->conf);
+    blkconf_apply_backend_options(&s->conf);
 
     /*
      * Hack alert: this pretends to be a block device, but it's really
      * a SCSI bus that can serve only a single device, which it
      * creates automatically.  But first it needs to detach from its
      * blockdev, or else scsi_bus_legacy_add_drive() dies when it
-     * attaches again.
+     * attaches again. We also need to take another reference so that
+     * blk_detach_dev() doesn't free blk while we still need it.
      *
      * The hack is probably a bad idea.
      */
+    blk_ref(blk);
     blk_detach_dev(blk, &s->dev.qdev);
     s->conf.blk = NULL;
 
@@ -652,6 +626,7 @@ static void usb_msd_realize_storage(USBDevice *dev, Error **errp)
     scsi_dev = scsi_bus_legacy_add_drive(&s->bus, blk, 0, !!s->removable,
                                          s->conf.bootindex, dev->serial,
                                          &err);
+    blk_unref(blk);
     if (!scsi_dev) {
         error_propagate(errp, err);
         return;
@@ -663,9 +638,14 @@ static void usb_msd_realize_storage(USBDevice *dev, Error **errp)
 static void usb_msd_realize_bot(USBDevice *dev, Error **errp)
 {
     MSDState *s = USB_STORAGE_DEV(dev);
+    DeviceState *d = DEVICE(dev);
 
     usb_desc_create_serial(dev);
     usb_desc_init(dev);
+    if (d->hotplugged) {
+        s->dev.auto_attach = 0;
+    }
+
     scsi_bus_new(&s->bus, sizeof(s->bus), DEVICE(dev),
                  &usb_msd_scsi_info_bot, NULL);
     usb_msd_handle_reset(dev);
@@ -778,24 +758,24 @@ static void usb_msd_class_initfn_storage(ObjectClass *klass, void *data)
     dc->props = msd_properties;
 }
 
-static void usb_msd_get_bootindex(Object *obj, Visitor *v, void *opaque,
-                                  const char *name, Error **errp)
+static void usb_msd_get_bootindex(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
 {
     USBDevice *dev = USB_DEVICE(obj);
     MSDState *s = USB_STORAGE_DEV(dev);
 
-    visit_type_int32(v, &s->conf.bootindex, name, errp);
+    visit_type_int32(v, name, &s->conf.bootindex, errp);
 }
 
-static void usb_msd_set_bootindex(Object *obj, Visitor *v, void *opaque,
-                                  const char *name, Error **errp)
+static void usb_msd_set_bootindex(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
 {
     USBDevice *dev = USB_DEVICE(obj);
     MSDState *s = USB_STORAGE_DEV(dev);
     int32_t boot_index;
     Error *local_err = NULL;
 
-    visit_type_int32(v, &boot_index, name, &local_err);
+    visit_type_int32(v, name, &boot_index, &local_err);
     if (local_err) {
         goto out;
     }
@@ -813,9 +793,7 @@ static void usb_msd_set_bootindex(Object *obj, Visitor *v, void *opaque,
     }
 
 out:
-    if (local_err) {
-        error_propagate(errp, local_err);
-    }
+    error_propagate(errp, local_err);
 }
 
 static const TypeInfo usb_storage_dev_type_info = {
@@ -837,10 +815,9 @@ static void usb_msd_instance_init(Object *obj)
 static void usb_msd_class_initfn_bot(ObjectClass *klass, void *data)
 {
     USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
-    DeviceClass *dc = DEVICE_CLASS(klass);
 
     uc->realize = usb_msd_realize_bot;
-    dc->hotpluggable = false;
+    uc->attached_settable = true;
 }
 
 static const TypeInfo msd_info = {

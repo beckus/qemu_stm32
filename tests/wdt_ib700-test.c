@@ -7,10 +7,8 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <glib.h>
-#include <string.h>
-#include "libqtest.h"
 #include "qemu/osdep.h"
+#include "libqtest.h"
 #include "qemu/timer.h"
 
 static void qmp_check_no_event(void)
@@ -119,15 +117,11 @@ static void ib700_none(void)
 
 int main(int argc, char **argv)
 {
-    int ret;
-
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/wdt_ib700/pause", ib700_pause);
     qtest_add_func("/wdt_ib700/reset", ib700_reset);
     qtest_add_func("/wdt_ib700/shutdown", ib700_shutdown);
     qtest_add_func("/wdt_ib700/none", ib700_none);
 
-    ret = g_test_run();
-
-    return ret;
+    return g_test_run();
 }

@@ -22,11 +22,8 @@
  * THE SOFTWARE.
  */
 
-#include <stdint.h>
-#include <string.h>
-#include <stdio.h>
+#include "qemu/osdep.h"
 
-#include <glib.h>
 
 #include "libqtest.h"
 #include "qemu-common.h"
@@ -267,7 +264,7 @@ static void test_cmos(void)
     uint8_t cmos;
 
     cmos = cmos_read(CMOS_FLOPPY);
-    g_assert(cmos == 0x40);
+    g_assert(cmos == 0x40 || cmos == 0x50);
 }
 
 static void test_no_media_on_start(void)
@@ -304,9 +301,6 @@ static void test_media_insert(void)
     qmp_discard_response("{'execute':'change', 'arguments':{"
                          " 'device':'floppy0', 'target': %s, 'arg': 'raw' }}",
                          test_image);
-    qmp_discard_response(""); /* ignore event
-                                 (FIXME open -> open transition?!) */
-    qmp_discard_response(""); /* ignore event */
 
     dir = inb(FLOPPY_BASE + reg_dir);
     assert_bit_set(dir, DSKCHG);
@@ -337,7 +331,6 @@ static void test_media_change(void)
      * reset the bit. */
     qmp_discard_response("{'execute':'eject', 'arguments':{"
                          " 'device':'floppy0' }}");
-    qmp_discard_response(""); /* ignore event */
 
     dir = inb(FLOPPY_BASE + reg_dir);
     assert_bit_set(dir, DSKCHG);

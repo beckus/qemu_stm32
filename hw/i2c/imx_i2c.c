@@ -18,16 +18,22 @@
  *
  */
 
+#include "qemu/osdep.h"
 #include "hw/i2c/imx_i2c.h"
 #include "hw/i2c/i2c.h"
+#include "qemu/log.h"
 
-#ifndef IMX_I2C_DEBUG
-#define IMX_I2C_DEBUG                 0
+#ifndef DEBUG_IMX_I2C
+#define DEBUG_IMX_I2C 0
 #endif
 
-#if IMX_I2C_DEBUG
-#define DPRINT(fmt, args...)              \
-    do { fprintf(stderr, "%s: "fmt, __func__, ## args); } while (0)
+#define DPRINTF(fmt, args...) \
+    do { \
+        if (DEBUG_IMX_I2C) { \
+            fprintf(stderr, "[%s]%s: " fmt , TYPE_IMX_I2C, \
+                                             __func__, ##args); \
+        } \
+    } while (0)
 
 static const char *imx_i2c_get_regname(unsigned offset)
 {
@@ -46,9 +52,6 @@ static const char *imx_i2c_get_regname(unsigned offset)
         return "[?]";
     }
 }
-#else
-#define DPRINT(fmt, args...)              do { } while (0)
-#endif
 
 static inline bool imx_i2c_is_enabled(IMXI2CState *s)
 {
@@ -121,11 +124,11 @@ static uint64_t imx_i2c_read(void *opaque, hwaddr offset,
 
             if (s->address == ADDR_RESET) {
                 /* something is wrong as the address is not set */
-                qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Trying to read "
+                qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Trying to read "
                               "without specifying the slave address\n",
                               TYPE_IMX_I2C, __func__);
             } else if (s->i2cr & I2CR_MTX) {
-                qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Trying to read "
+                qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Trying to read "
                               "but MTX is set\n", TYPE_IMX_I2C, __func__);
             } else {
                 /* get the next byte */
@@ -134,7 +137,7 @@ static uint64_t imx_i2c_read(void *opaque, hwaddr offset,
                 if (ret >= 0) {
                     imx_i2c_raise_interrupt(s);
                 } else {
-                    qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: read failed "
+                    qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: read failed "
                                   "for device 0x%02x\n", TYPE_IMX_I2C,
                                   __func__, s->address);
                     ret = 0xff;
@@ -143,19 +146,19 @@ static uint64_t imx_i2c_read(void *opaque, hwaddr offset,
 
             s->i2dr_read = ret;
         } else {
-            qemu_log_mask(LOG_UNIMP, "%s[%s]: slave mode not implemented\n",
+            qemu_log_mask(LOG_UNIMP, "[%s]%s: slave mode not implemented\n",
                           TYPE_IMX_I2C, __func__);
         }
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Bad address at offset %d\n",
-                      TYPE_IMX_I2C, __func__, s->address);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad address at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_I2C, __func__, offset);
         value = 0;
         break;
     }
 
-    DPRINT("read %s [0x%02x] -> 0x%02x\n", imx_i2c_get_regname(offset),
-           (unsigned int)offset, value);
+    DPRINTF("read %s [0x%" HWADDR_PRIx "] -> 0x%02x\n",
+            imx_i2c_get_regname(offset), offset, value);
 
     return (uint64_t)value;
 }
@@ -165,8 +168,8 @@ static void imx_i2c_write(void *opaque, hwaddr offset,
 {
     IMXI2CState *s = IMX_I2C(opaque);
 
-    DPRINT("write %s [0x%02x] <- 0x%02x\n", imx_i2c_get_regname(offset),
-           (unsigned int)offset, (int)value);
+    DPRINTF("write %s [0x%" HWADDR_PRIx "] <- 0x%02x\n",
+            imx_i2c_get_regname(offset), offset, (int)value);
 
     value &= 0xff;
 
@@ -245,7 +248,7 @@ static void imx_i2c_write(void *opaque, hwaddr offset,
             if (s->address == ADDR_RESET) {
                 if (i2c_start_transfer(s->bus, extract32(s->i2dr_write, 1, 7),
                                        extract32(s->i2dr_write, 0, 1))) {
-                    /* if non zero is returned, the adress is not valid */
+                    /* if non zero is returned, the address is not valid */
                     s->i2sr |= I2SR_RXAK;
                 } else {
                     s->address = s->i2dr_write;
@@ -264,13 +267,13 @@ static void imx_i2c_write(void *opaque, hwaddr offset,
                 }
             }
         } else {
-            qemu_log_mask(LOG_UNIMP, "%s[%s]: slave mode not implemented\n",
+            qemu_log_mask(LOG_UNIMP, "[%s]%s: slave mode not implemented\n",
                           TYPE_IMX_I2C, __func__);
         }
         break;
     default:
-        qemu_log_mask(LOG_GUEST_ERROR, "%s[%s]: Bad address at offset %d\n",
-                      TYPE_IMX_I2C, __func__, s->address);
+        qemu_log_mask(LOG_GUEST_ERROR, "[%s]%s: Bad address at offset 0x%"
+                      HWADDR_PRIx "\n", TYPE_IMX_I2C, __func__, offset);
         break;
     }
 }
@@ -317,6 +320,7 @@ static void imx_i2c_class_init(ObjectClass *klass, void *data)
     dc->vmsd = &imx_i2c_vmstate;
     dc->reset = imx_i2c_reset;
     dc->realize = imx_i2c_realize;
+    dc->desc = "i.MX I2C Controller";
 }
 
 static const TypeInfo imx_i2c_type_info = {

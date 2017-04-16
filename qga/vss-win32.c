@@ -10,7 +10,7 @@
  * See the COPYING file in the top-level directory.
  */
 
-#include <stdio.h>
+#include "qemu/osdep.h"
 #include <windows.h>
 #include "qga/guest-agent-core.h"
 #include "qga/vss-win32.h"
@@ -150,7 +150,7 @@ void qga_vss_fsfreeze(int *nr_volume, Error **errp, bool freeze)
     const char *func_name = freeze ? "requester_freeze" : "requester_thaw";
     QGAVSSRequesterFunc func;
     ErrorSet errset = {
-        .error_setg_win32 = error_setg_win32_internal,
+        .error_setg_win32_wrapper = error_setg_win32_internal,
         .errp = errp,
     };
 

@@ -21,6 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include "qemu/osdep.h"
+#include "cpu.h"
 #include "hw/hw.h"
 #include "hw/timer/m48t59.h"
 #include "hw/i386/pc.h"
@@ -33,6 +35,7 @@
 #include "hw/pci/pci_host.h"
 #include "hw/ppc/ppc.h"
 #include "hw/boards.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "hw/ide.h"
 #include "hw/loader.h"
@@ -42,10 +45,9 @@
 #include "sysemu/arch_init.h"
 #include "sysemu/qtest.h"
 #include "exec/address-spaces.h"
+#include "trace.h"
 #include "elf.h"
-
-//#define HARD_DEBUG_PPC_IO
-//#define DEBUG_PPC_IO
+#include "qemu/cutils.h"
 
 /* SMP is not enabled, for now */
 #define MAX_CPUS 1
@@ -56,26 +58,6 @@
 #define BIOS_FILENAME "ppc_rom.bin"
 #define KERNEL_LOAD_ADDR 0x01000000
 #define INITRD_LOAD_ADDR 0x01800000
-
-#if defined (HARD_DEBUG_PPC_IO) && !defined (DEBUG_PPC_IO)
-#define DEBUG_PPC_IO
-#endif
-
-#if defined (HARD_DEBUG_PPC_IO)
-#define PPC_IO_DPRINTF(fmt, ...)                         \
-do {                                                     \
-    if (qemu_loglevel_mask(CPU_LOG_IOPORT)) {            \
-        qemu_log("%s: " fmt, __func__ , ## __VA_ARGS__); \
-    } else {                                             \
-        printf("%s : " fmt, __func__ , ## __VA_ARGS__);  \
-    }                                                    \
-} while (0)
-#elif defined (DEBUG_PPC_IO)
-#define PPC_IO_DPRINTF(fmt, ...) \
-qemu_log_mask(CPU_LOG_IOPORT, fmt, ## __VA_ARGS__)
-#else
-#define PPC_IO_DPRINTF(fmt, ...) do { } while (0)
-#endif
 
 /* Constants for devices init */
 static const int ide_iobase[2] = { 0x1f0, 0x170 };
@@ -199,8 +181,7 @@ static void PREP_io_800_writeb (void *opaque, uint32_t addr, uint32_t val)
 {
     sysctrl_t *sysctrl = opaque;
 
-    PPC_IO_DPRINTF("0x%08" PRIx32 " => 0x%02" PRIx32 "\n",
-                   addr - PPC_IO_BASE, val);
+    trace_prep_io_800_writeb(addr - PPC_IO_BASE, val);
     switch (addr) {
     case 0x0092:
         /* Special port 92 */
@@ -327,8 +308,7 @@ static uint32_t PREP_io_800_readb (void *opaque, uint32_t addr)
         printf("ERROR: unaffected IO port: %04" PRIx32 " read\n", addr);
         break;
     }
-    PPC_IO_DPRINTF("0x%08" PRIx32 " <= 0x%02" PRIx32 "\n",
-                   addr - PPC_IO_BASE, retval);
+    trace_prep_io_800_readb(addr - PPC_IO_BASE, retval);
 
     return retval;
 }
@@ -556,7 +536,7 @@ static void ppc_prep_init(MachineState *machine)
         kernel_size = load_image_targphys(kernel_filename, kernel_base,
                                           ram_size - kernel_base);
         if (kernel_size < 0) {
-            hw_error("qemu: could not load kernel '%s'\n", kernel_filename);
+            error_report("could not load kernel '%s'", kernel_filename);
             exit(1);
         }
         /* load initrd */
@@ -565,8 +545,9 @@ static void ppc_prep_init(MachineState *machine)
             initrd_size = load_image_targphys(initrd_filename, initrd_base,
                                               ram_size - initrd_base);
             if (initrd_size < 0) {
-                hw_error("qemu: could not load initial ram disk '%s'\n",
-                          initrd_filename);
+                error_report("could not load initial ram disk '%s'",
+                             initrd_filename);
+                exit(1);
             }
         } else {
             initrd_base = 0;
@@ -593,7 +574,8 @@ static void ppc_prep_init(MachineState *machine)
     }
 
     if (PPC_INPUT(env) != PPC_FLAGS_INPUT_6xx) {
-        hw_error("Only 6xx bus is supported on PREP machine\n");
+        error_report("Only 6xx bus is supported on PREP machine");
+        exit(1);
     }
 
     dev = qdev_create(NULL, "raven-pcihost");
@@ -667,7 +649,7 @@ static void ppc_prep_init(MachineState *machine)
     memory_region_add_subregion(sysmem, 0xFEFF0000, xcsr);
 #endif
 
-    if (usb_enabled()) {
+    if (machine_usb(machine)) {
         pci_create_simple(pci_bus, -1, "pci-ohci");
     }
 

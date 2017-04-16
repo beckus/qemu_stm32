@@ -28,21 +28,24 @@
 #  define LOG_DISAS(...) do { } while (0)
 #endif
 
+#include "qemu/osdep.h"
 #include "cpu.h"
 #include "disas/disas.h"
+#include "exec/exec-all.h"
 #include "tcg-op.h"
 #include "qemu/log.h"
 #include "qemu/host-utils.h"
 #include "exec/cpu_ldst.h"
 
 /* global register indexes */
-static TCGv_ptr cpu_env;
+static TCGv_env cpu_env;
 
 #include "exec/gen-icount.h"
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
 
 #include "trace-tcg.h"
+#include "exec/log.h"
 
 
 /* Information that (most) every instruction needs to manipulate.  */
@@ -166,35 +169,36 @@ void s390x_translate_init(void)
     int i;
 
     cpu_env = tcg_global_reg_new_ptr(TCG_AREG0, "env");
-    psw_addr = tcg_global_mem_new_i64(TCG_AREG0,
+    tcg_ctx.tcg_env = cpu_env;
+    psw_addr = tcg_global_mem_new_i64(cpu_env,
                                       offsetof(CPUS390XState, psw.addr),
                                       "psw_addr");
-    psw_mask = tcg_global_mem_new_i64(TCG_AREG0,
+    psw_mask = tcg_global_mem_new_i64(cpu_env,
                                       offsetof(CPUS390XState, psw.mask),
                                       "psw_mask");
-    gbea = tcg_global_mem_new_i64(TCG_AREG0,
+    gbea = tcg_global_mem_new_i64(cpu_env,
                                   offsetof(CPUS390XState, gbea),
                                   "gbea");
 
-    cc_op = tcg_global_mem_new_i32(TCG_AREG0, offsetof(CPUS390XState, cc_op),
+    cc_op = tcg_global_mem_new_i32(cpu_env, offsetof(CPUS390XState, cc_op),
                                    "cc_op");
-    cc_src = tcg_global_mem_new_i64(TCG_AREG0, offsetof(CPUS390XState, cc_src),
+    cc_src = tcg_global_mem_new_i64(cpu_env, offsetof(CPUS390XState, cc_src),
                                     "cc_src");
-    cc_dst = tcg_global_mem_new_i64(TCG_AREG0, offsetof(CPUS390XState, cc_dst),
+    cc_dst = tcg_global_mem_new_i64(cpu_env, offsetof(CPUS390XState, cc_dst),
                                     "cc_dst");
-    cc_vr = tcg_global_mem_new_i64(TCG_AREG0, offsetof(CPUS390XState, cc_vr),
+    cc_vr = tcg_global_mem_new_i64(cpu_env, offsetof(CPUS390XState, cc_vr),
                                    "cc_vr");
 
     for (i = 0; i < 16; i++) {
         snprintf(cpu_reg_names[i], sizeof(cpu_reg_names[0]), "r%d", i);
-        regs[i] = tcg_global_mem_new(TCG_AREG0,
+        regs[i] = tcg_global_mem_new(cpu_env,
                                      offsetof(CPUS390XState, regs[i]),
                                      cpu_reg_names[i]);
     }
 
     for (i = 0; i < 16; i++) {
         snprintf(cpu_reg_names[i + 16], sizeof(cpu_reg_names[0]), "f%d", i);
-        fregs[i] = tcg_global_mem_new(TCG_AREG0,
+        fregs[i] = tcg_global_mem_new(cpu_env,
                                       offsetof(CPUS390XState, vregs[i][0].d),
                                       cpu_reg_names[i + 16]);
     }
@@ -606,12 +610,17 @@ static void gen_op_calc_cc(DisasContext *s)
 
 static int use_goto_tb(DisasContext *s, uint64_t dest)
 {
-    /* NOTE: we handle the case where the TB spans two pages here */
-    return (((dest & TARGET_PAGE_MASK) == (s->tb->pc & TARGET_PAGE_MASK)
-             || (dest & TARGET_PAGE_MASK) == ((s->pc - 1) & TARGET_PAGE_MASK))
-            && !s->singlestep_enabled
-            && !(s->tb->cflags & CF_LAST_IO)
-            && !(s->tb->flags & FLAG_MASK_PER));
+    if (unlikely(s->singlestep_enabled) ||
+        (s->tb->cflags & CF_LAST_IO) ||
+        (s->tb->flags & FLAG_MASK_PER)) {
+        return false;
+    }
+#ifndef CONFIG_USER_ONLY
+    return (dest & TARGET_PAGE_MASK) == (s->tb->pc & TARGET_PAGE_MASK) ||
+           (dest & TARGET_PAGE_MASK) == (s->pc & TARGET_PAGE_MASK);
+#else
+    return true;
+#endif
 }
 
 static void account_noninline_branch(DisasContext *s, int cc_op)
@@ -3977,21 +3986,21 @@ static ExitStatus op_svc(DisasContext *s, DisasOps *o)
 
 static ExitStatus op_tceb(DisasContext *s, DisasOps *o)
 {
-    gen_helper_tceb(cc_op, o->in1, o->in2);
+    gen_helper_tceb(cc_op, cpu_env, o->in1, o->in2);
     set_cc_static(s);
     return NO_EXIT;
 }
 
 static ExitStatus op_tcdb(DisasContext *s, DisasOps *o)
 {
-    gen_helper_tcdb(cc_op, o->in1, o->in2);
+    gen_helper_tcdb(cc_op, cpu_env, o->in1, o->in2);
     set_cc_static(s);
     return NO_EXIT;
 }
 
 static ExitStatus op_tcxb(DisasContext *s, DisasOps *o)
 {
-    gen_helper_tcxb(cc_op, o->out, o->out2, o->in2);
+    gen_helper_tcxb(cc_op, cpu_env, o->out, o->out2, o->in2);
     set_cc_static(s);
     return NO_EXIT;
 }
@@ -5360,6 +5369,11 @@ void gen_intermediate_code(CPUS390XState *env, struct TranslationBlock *tb)
         if (unlikely(cpu_breakpoint_test(cs, dc.pc, BP_ANY))) {
             status = EXIT_PC_STALE;
             do_debug = true;
+            /* The address covered by the breakpoint must be included in
+               [tb->pc, tb->pc + tb->size) in order to for it to be
+               properly cleared -- thus we increment the PC here so that
+               the logic setting tb->size below does the right thing.  */
+            dc.pc += 2;
             break;
         }
 
@@ -5416,7 +5430,8 @@ void gen_intermediate_code(CPUS390XState *env, struct TranslationBlock *tb)
     tb->icount = num_insns;
 
 #if defined(S390X_DEBUG_DISAS)
-    if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)) {
+    if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)
+        && qemu_log_in_addr_range(pc_start)) {
         qemu_log("IN: %s\n", lookup_symbol(pc_start));
         log_target_disas(cs, pc_start, dc.pc - pc_start, 1);
         qemu_log("\n");
