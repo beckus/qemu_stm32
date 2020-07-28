@@ -32,6 +32,7 @@
 void stm32_hw_warn(const char *fmt, ...)
     __attribute__ ((__format__ (__printf__, 1, 2)));
 
+#define STM32_FLASH_ADDR_START (0x08000000)
 
 #define ENUM_STRING(x) [x] = #x
 #define ARRAY_LENGTH(array) (sizeof((array))/sizeof((array)[0]))
@@ -133,6 +134,8 @@ enum {
     STM32_HASH_PERIPH,
     STM32_RNG_PERIPH,
     STM32_PERIPH_COUNT,
+    STM32_FLASH,
+    STM32_FLASH_REGS,
 };
 
 const char *stm32_periph_name(stm32_periph_t periph);
@@ -383,6 +386,22 @@ typedef struct Stm32crc Stm32crc;
 
 #define TYPE_STM32_CRC "stm32-crc"
 #define STM32_CRC(obj) OBJECT_CHECK(Stm32crc, (obj), TYPE_STM32_CRC)
+
+/* FLASH */
+typedef struct Stm32Flash Stm32Flash;
+
+#define TYPE_STM32_FLASH "stm32-flash"
+#define STM32_FLASH(obj) OBJECT_CHECK(Stm32Flash, (obj), TYPE_STM32_FLASH)
+
+Stm32Flash *stm32_flash_register(BlockDriverState *blks, hwaddr base, hwaddr size);
+
+
+/* Flash Regs */
+typedef struct Stm32FlashRegs Stm32FlashRegs;
+
+#define TYPE_STM32_FLASH_REGS "stm32-flash-regs"
+#define STM32_FLASH_REGS(obj) OBJECT_CHECK(Stm32FlashRegs, (obj), TYPE_STM32_FLASH_REGS)
+
 
 /* DMA1 */
 typedef struct stm32_dma stm32_dma;

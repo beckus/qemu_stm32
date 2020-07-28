@@ -22,6 +22,7 @@
 #include "hw/arm/stm32.h"
 #include "exec/address-spaces.h"
 #include "exec/gdbstub.h"
+#include "sysemu/blockdev.h" // drive_get
 
 /* DEFINITIONS */
 
@@ -225,6 +226,12 @@ static void stm32_create_dac_dev(
     
 }
 
+static uint64_t kernel_load_translate_fn(void *opaque, uint64_t from_addr) {
+    if (from_addr == STM32_FLASH_ADDR_START) {
+        return 0x00000000;
+    }
+    return from_addr;
+}
 
 void stm32_init(
             ram_addr_t flash_size,
@@ -234,39 +241,61 @@ void stm32_init(
             uint32_t osc32_freq)
 {
     MemoryRegion *address_space_mem = get_system_memory();
-    MemoryRegion *flash_alias_mem = g_malloc(sizeof(MemoryRegion));
     qemu_irq *pic;
+    DriveInfo *dinfo;
     int i;
 
     Object *stm32_container = container_get(qdev_get_machine(), "/stm32");
 
-    pic = armv7m_init(
+    pic = armv7m_translated_init(
               stm32_container,
               address_space_mem,
               flash_size,
               ram_size,
               kernel_filename,
+              kernel_load_translate_fn,
+              NULL,
               "cortex-m3");
-
-    /* The STM32 family stores its Flash memory at some base address in memory
-     * (0x08000000 for medium density devices), and then aliases it to the
-     * boot memory space, which starts at 0x00000000 (the "System Memory" can also
-     * be aliased to 0x00000000, but this is not implemented here). The processor
-     * executes the code in the aliased memory at 0x00000000.  We need to make a
-     * QEMU alias so that reads in the 0x08000000 area are passed through to the
-     * 0x00000000 area. Note that this is the opposite of real hardware, where the
-     * memory at 0x00000000 passes reads through the "real" flash memory at
-     * 0x08000000, but it works the same either way. */
-    /* TODO: Parameterize the base address of the aliased memory. */
-    memory_region_init_alias(
-            flash_alias_mem,
-            NULL,
-            "stm32-flash-alias-mem",
-            address_space_mem,
-            0,
-            flash_size);
-    memory_region_add_subregion(address_space_mem, 0x08000000, flash_alias_mem);
-
+    
+    if(kernel_filename) //Use legacy mode without reset support
+    {
+          MemoryRegion *flash_alias_mem = g_malloc(sizeof(MemoryRegion));
+          /* The STM32 family stores its Flash memory at some base address in memory
+          * (0x08000000 for medium density devices), and then aliases it to the
+          * boot memory space, which starts at 0x00000000 (the "System Memory" can also
+          * be aliased to 0x00000000, but this is not implemented here). The processor
+          * executes the code in the aliased memory at 0x00000000.  We need to make a
+          * QEMU alias so that reads in the 0x08000000 area are passed through to the
+          * 0x00000000 area. Note that this is the opposite of real hardware, where the
+          * memory at 0x00000000 passes reads through the "real" flash memory at
+          * 0x08000000, but it works the same either way. */
+         /* TODO: Parameterize the base address of the aliased memory. */
+         memory_region_init_alias(
+                 flash_alias_mem,
+                 NULL,
+                 "stm32-flash-alias-mem",
+                 address_space_mem,
+                 0,
+                 flash_size);
+         memory_region_add_subregion(address_space_mem, STM32_FLASH_ADDR_START, flash_alias_mem);
+    }
+    else{ //Use new FLASH mode with reset support
+         dinfo = drive_get(IF_PFLASH, 0, 0);
+         if (dinfo) {
+             stm32_flash_register(dinfo->bdrv , STM32_FLASH_ADDR_START, flash_size);
+         }
+         MemoryRegionSection mrs = memory_region_find(address_space_mem, STM32_FLASH_ADDR_START, 4 /*WORD_ACCESS_SIZE*/);
+         MemoryRegion *flash_alias_mem = g_new(MemoryRegion, 1);
+         memory_region_init_alias(
+               flash_alias_mem,
+               NULL,
+               "stm32-flash-alias-mem",
+               mrs.mr, 
+               0,
+               flash_size);
+         memory_region_add_subregion(address_space_mem, 0, flash_alias_mem);
+    }
+    
     DeviceState *rcc_dev = qdev_create(NULL, "stm32-rcc");
     qdev_prop_set_uint32(rcc_dev, "osc_freq", osc_freq);
     qdev_prop_set_uint32(rcc_dev, "osc32_freq", osc32_freq);
@@ -337,10 +366,14 @@ void stm32_init(
     qdev_prop_set_ptr(iwdg_dev, "stm32_rcc", rcc_dev);
     stm32_init_periph(iwdg_dev, STM32_IWDG, 0x40003000, NULL);
 
-	/* CRC */
-	DeviceState *crc = qdev_create(NULL, "stm32-crc");
-	stm32_init_periph(crc, STM32_CRC, 0x40023000, NULL);
-
+    /* CRC */
+    DeviceState *crc = qdev_create(NULL, "stm32-crc");
+    stm32_init_periph(crc, STM32_CRC, 0x40023000, NULL);
+    
+    /* FLASH regs */
+    DeviceState *flash_regs = qdev_create(NULL, "stm32-flash-regs");
+    stm32_init_periph(flash_regs, STM32_FLASH_REGS, 0x40022000, NULL);
+    
     DeviceState *dma1 = qdev_create(NULL, "stm32_dma");
     stm32_init_periph(dma1, STM32_DMA1, 0x40020000, NULL);
     sysbus_connect_irq(SYS_BUS_DEVICE(dma1), 0, pic[STM32_DMA1_STREAM0_IRQ]);
